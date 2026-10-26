@@ -1,0 +1,26 @@
+{
+  "name": "smart-home-ops",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "latest",
+    "axios": "latest",
+    "echarts": "latest",
+    "element-plus": "latest",
+    "lodash-es": "latest",
+    "pinia": "latest",
+    "vue": "latest",
+    "vue-router": "latest"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vite": "latest",
+    "vue-tsc": "latest"
+  }
+}

@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException
+
+from app.services.agent.knowledge.embedder import EmbeddingError
+from app.services.agent.knowledge.loader import KnowledgeLoadError
+from app.services.agent.knowledge.retriever import KnowledgeRetriever
+from app.services.agent.knowledge.schemas import (
+    KnowledgeSearchRequest, KnowledgeSearchResponse, KnowledgeStatus,
+)
+from app.services.agent.knowledge.vector_store import VectorStoreError
+
+router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+retriever = KnowledgeRetriever()
+
+
+@router.post("/search", response_model=KnowledgeSearchResponse)
+def search_knowledge(request: KnowledgeSearchRequest) -> KnowledgeSearchResponse:
+    try:
+        return KnowledgeSearchResponse(results=retriever.search(
+            request.query, request.top_k, request.device_model))
+    except (KnowledgeLoadError, EmbeddingError, VectorStoreError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/init")
+def init_knowledge() -> dict[str, int]:
+    try:
+        return {"chunks": retriever.rebuild()}
+    except (KnowledgeLoadError, EmbeddingError, VectorStoreError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/status", response_model=KnowledgeStatus)
+def knowledge_status() -> KnowledgeStatus:
+    return KnowledgeStatus(
+        ready=bool(retriever.chunks), documents=len(retriever.documents()),
+        chunks=len(retriever.chunks), vector_backend=retriever.store.backend)
+
+
+# Compatibility endpoints retained for existing clients.
+@router.get("/documents")
+def list_knowledge_documents():
+    return retriever.documents()
+
+
+@router.post("/rebuild")
+def rebuild_knowledge() -> dict[str, int]:
+    return init_knowledge()

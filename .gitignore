@@ -1,0 +1,42 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+dist-ssr/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 运行期数据
+.data/
+*.db
+*.sqlite3
+
+# 环境变量（.env.example 必须保留）
+.env
+.env.*
+!.env.example
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 临时文件
+tmp_test*.txt
+.tmp*
+.dsh-office-*/
+
+# 个人备赛笔记，不公开
+docs/PROJECT_STORY.md

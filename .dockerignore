@@ -1,0 +1,18 @@
+# 构建上下文排除项（.dockerignore 只作用于 docker build）
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.data
+*.db
+*.sqlite3
+**/__pycache__
+**/*.pyc
+.tsbuildinfo
+*.tsbuildinfo
+.vscode
+.idea
+README.md
