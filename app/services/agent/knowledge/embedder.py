@@ -20,6 +20,7 @@ class VLLMEmbedder:
         self.base_url = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1").rstrip("/")
         self.api_key = os.getenv("VLLM_API_KEY", "")
         self.model = os.getenv("VLLM_EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
+        self.dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", str(self.dimensions)))
 
     def _request(self, texts: list[str]) -> list[list[float]]:
         payload = json.dumps({"model": self.model, "input": texts}).encode()
@@ -37,7 +38,10 @@ class VLLMEmbedder:
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
             raise EmbeddingError("vLLM embedding request failed") from exc
 
-    def embed_query(self, text: str, prefix: str = "为这个句子生成表示以用于检索相关文章：") -> list[float]:
+    def embed_query(self, text: str, prefix: str = "") -> list[float]:
+        # BGE 系列需要检索指令前缀，text-embedding / 多模态向量加了反而掉点
+        if not prefix and "bge" in self.model.lower():
+            prefix = "为这个句子生成表示以用于检索相关文章："
         return self._request([prefix + text])[0]
 
     def embed_texts(self, texts: list[str], batch_size: int = 16) -> list[list[float]]:
