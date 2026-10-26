@@ -6,6 +6,28 @@
 维修人员在工单池接单、流转状态、与业主实时沟通；
 用户也可以直接和 AI 客服对话——它会**先查知识库、再查真实设备状态，然后决定是否替你建单**。
 
+<img src="docs/overview.png" width="820" alt="总览页">
+
+---
+
+## 界面预览
+
+**设备管理** · 类型目录驱动，参数区随设备类型切换
+
+<img src="docs/device-form.png" width="460" alt="设备管理">
+
+**AI 场景方案** · 模型产出结构化草案，用户一键布设
+
+<img src="docs/ai-proposal.png" width="440" alt="AI 场景方案">
+
+**维修人员工作台** · 工单统计、优先级标记、状态流转时间线
+
+<img src="docs/technician-workbench.png" width="820" alt="维修工作台">
+
+**角色注册** · 家庭用户与维修人员两类账号
+
+<img src="docs/register-roles.png" width="420" alt="角色注册">
+
 ---
 
 ## 功能
