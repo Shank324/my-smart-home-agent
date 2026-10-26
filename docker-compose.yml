@@ -38,6 +38,12 @@ services:
       KNOWLEDGE_DATA_DIR: seed_data
     ports:
       - "8000:8000"
+    volumes:
+      # 语料挂载：改文档后只需重新索引，不用重建镜像
+      - ./seed_data:/app/seed_data:ro
+      # 开发期挂载源码：改代码后 restart 即可生效
+      - ./backend:/app/backend:ro
+      - ./app:/app/app:ro
     depends_on:
       mysql:
         condition: service_healthy

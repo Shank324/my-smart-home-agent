@@ -13,6 +13,8 @@ class EmbeddingError(RuntimeError):
 
 class VLLMEmbedder:
     dimensions = 1024
+    # 真向量模型具备语义能力，可参与混合检索
+    is_semantic = True
 
     def __init__(self) -> None:
         self.base_url = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1").rstrip("/")
@@ -49,8 +51,14 @@ class VLLMEmbedder:
 
 
 class HashEmbedder:
-    """Compatibility fallback, explicitly selected with KNOWLEDGE_EMBEDDER=hash."""
+    """兼容性兜底，需显式设置 KNOWLEDGE_EMBEDDER=hash 才启用。
+
+    只做哈希分桶，没有语义能力，给出的"相似度"接近随机。
+    因此 retriever 会跳过向量通道、退化为纯 BM25：
+    把随机排序等权融进 RRF 会把正确答案挤下去（实测「灯一直闪」会召回电视投屏）。
+    """
     dimensions = 1024
+    is_semantic = False
 
     def embed(self, text: str) -> list[float]:
         import hashlib, math, re
