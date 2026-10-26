@@ -109,6 +109,7 @@ class KnowledgeRetriever:
             item = combined.get(key)
             if item:
                 item.score += 1 / (60 + rank)
+                item.keyword_score = keyword[chunk_id]
             else:
                 combined[key] = RetrievalResult(content=chunk.content, source_doc=chunk.source,
                     section=" > ".join(chunk.section_path), score=1 / (60 + rank),
