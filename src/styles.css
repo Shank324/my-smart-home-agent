@@ -209,6 +209,14 @@ header button { padding: 8px 13px; border: 1px solid #dce6dc; border-radius: 7px
 .proposal-buttons .ghost { padding: 8px 12px; font-size: 11px; }
 .proposal-done { margin: 9px 0 0; color: #2f6b56; font-size: 10px; font-weight: 600; }
 
+/* ---------- Agent 会话栏与消息元信息 ---------- */
+.session-bar { display: flex; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #edf1ec; background: #fbfcfa; }
+.session-bar select { flex: 1; padding: 7px 9px; font-size: 11px; }
+.session-bar .ghost { padding: 7px 11px; font-size: 10.5px; white-space: nowrap; }
+.msg-meta { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+.intent-chip { padding: 1px 6px; border-radius: 5px; color: #5e8a73; background: #edf4ef; font-size: 9px; }
+.ground-warn { padding: 1px 6px; border-radius: 5px; color: #b5533f; background: #fbe9e4; font-size: 9px; }
+
 /* ---------- AI 客服 ---------- */
 .assistant-fab { position: fixed; right: 26px; bottom: 26px; z-index: 40; display: inline-flex; align-items: center; gap: 8px; padding: 13px 20px; border-radius: 999px; color: #fff; background: #285e51; box-shadow: 0 12px 30px #285e5147; font-size: 13px; font-weight: 700; letter-spacing: .3px; transition: background .15s ease, transform .15s ease, box-shadow .15s ease; }
 .assistant-fab:hover { background: #1f4c42; transform: translateY(-2px); box-shadow: 0 16px 34px #285e5152; }

@@ -67,11 +67,14 @@ const powerActiveWatts = computed(() => Math.round(stats.value?.device_stats.pow
 type Citation = { source: string; section: string }
 type ProposalAction = { device_id: number; device_name: string; room: string; action: string; attributes: Record<string, number | string>; label: string }
 type SceneProposal = { name: string; description: string; rationale: string; actions: ProposalAction[]; missing: string[] }
-type AssistantMessage = { role: 'user' | 'assistant'; content: string; citations?: Citation[]; proposal?: SceneProposal; applied?: boolean }
+type AssistantMessage = { role: 'user' | 'assistant'; content: string; citations?: Citation[]; proposal?: SceneProposal; applied?: boolean; pending?: boolean; intent?: string; grounded?: boolean; warnings?: string[] }
+type AgentSessionInfo = { id: number; title: string; status: string; message_count?: number }
 const assistantOpen = ref(false)
 const assistantBusy = ref(false)
 const assistantDraft = ref('')
 const assistantMessages = ref<AssistantMessage[]>([])
+const agentSessions = ref<AgentSessionInfo[]>([])
+const activeSessionId = ref<number | null>(null)
 const assistantBox = ref<HTMLElement | null>(null)
 const suggestions = ['客厅空调开不起来怎么办？', '我家现在有哪些设备？', '厨房烟雾报警了怎么办？']
 
@@ -516,22 +519,78 @@ async function scrollAssistant() {
   if (assistantBox.value) assistantBox.value.scrollTop = assistantBox.value.scrollHeight
 }
 
+async function ensureSession(): Promise<number> {
+  if (activeSessionId.value) return activeSessionId.value
+  const response = await api('/api/assistant/sessions', { method: 'POST', body: JSON.stringify({}) })
+  if (!response.ok) throw new Error('无法创建会话')
+  const payload = await response.json()
+  activeSessionId.value = payload.id
+  await loadSessions()
+  return payload.id
+}
+
+async function loadSessions() {
+  const response = await api('/api/assistant/sessions')
+  if (!response.ok) return
+  agentSessions.value = await response.json()
+}
+
+async function openSession(id: number) {
+  activeSessionId.value = id
+  const response = await api(`/api/assistant/sessions/${id}`)
+  if (!response.ok) return
+  const payload = await response.json()
+  const messages: AssistantMessage[] = (payload.messages || []).map((item: any) => ({
+    role: item.role,
+    content: item.content,
+    citations: item.citations || [],
+    proposal: item.proposal || undefined,
+    intent: item.intent || undefined,
+    grounded: item.grounding?.grounded,
+    warnings: item.grounding?.warnings || []
+  }))
+  if (payload.status === 'pending_confirm') {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].proposal) { messages[index].pending = true; break }
+    }
+  }
+  assistantMessages.value = messages
+  await scrollAssistant()
+}
+
+async function toggleAssistant() {
+  assistantOpen.value = !assistantOpen.value
+  if (!assistantOpen.value) return
+  await loadSessions()
+  if (!activeSessionId.value && agentSessions.value.length) {
+    await openSession(agentSessions.value[0].id)
+  }
+  await scrollAssistant()
+}
+
+async function newChat() {
+  activeSessionId.value = null
+  assistantMessages.value = []
+  assistantDraft.value = ''
+}
+
+async function onSessionChange(event: Event) {
+  const value = Number((event.target as HTMLSelectElement).value)
+  if (value) await openSession(value)
+}
+
 async function askAssistant() {
   const text = assistantDraft.value.trim()
   if (!text || assistantBusy.value) return
-  assistantMessages.value.push({ role: 'user', content: text })
   assistantDraft.value = ''
   assistantBusy.value = true
+  assistantMessages.value.push({ role: 'user', content: text })
   await scrollAssistant()
   try {
-    const history = assistantMessages.value
-      .slice(0, -1)
-      .slice(-8)
-      .map((item) => ({ role: item.role, content: item.content }))
-    const lastProposal = [...assistantMessages.value].reverse().find((item) => item.proposal)?.proposal ?? null
-    const response = await api('/api/assistant/chat', {
+    const sessionId = await ensureSession()
+    const response = await api(`/api/assistant/sessions/${sessionId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ message: text, history, last_proposal: lastProposal })
+      body: JSON.stringify({ message: text })
     })
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}))
@@ -542,8 +601,13 @@ async function askAssistant() {
       role: 'assistant',
       content: payload.answer || '抱歉，我没有得到有效回复。',
       citations: payload.citations || [],
-      proposal: payload.proposal || undefined
+      proposal: payload.proposal || undefined,
+      intent: payload.intent || undefined,
+      grounded: payload.grounded,
+      warnings: payload.warnings || [],
+      pending: payload.status === 'pending_confirm'
     })
+    await loadSessions()
   } catch (cause) {
     assistantMessages.value.push({
       role: 'assistant',
@@ -555,37 +619,47 @@ async function askAssistant() {
   }
 }
 
-async function applyProposal(message: AssistantMessage, run: boolean) {
-  if (!message.proposal || message.applied) return
-  const proposal = message.proposal
+async function confirmPending(message: AssistantMessage) {
+  const sessionId = activeSessionId.value
+  if (!sessionId || message.applied) return
   try {
-    const response = await api('/api/scenes', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: proposal.name,
-        description: proposal.description || proposal.rationale || '',
-        actions: proposal.actions.map((item) => ({
-          device_id: item.device_id, action: item.action, attributes: item.attributes
-        }))
-      })
+    const response = await api(`/api/assistant/sessions/${sessionId}/confirm`, {
+      method: 'POST', body: '{}'
     })
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}))
-      const text = detail.detail === 'scene_name_exists'
-        ? '已存在同名场景，让 AI 换个名字再试'
-        : (typeof detail.detail === 'string' ? detail.detail : `HTTP ${response.status}`)
+      const text = typeof detail.detail === 'string' ? detail.detail : `HTTP ${response.status}`
       notify(`布设失败：${text}`)
       return
     }
-    const scene = await response.json()
-    if (run) {
-      await api('/api/scenes/execute', { method: 'POST', body: JSON.stringify({ scene_id: scene.id }) })
-    }
+    const payload = await response.json()
     message.applied = true
+    message.pending = false
+    assistantMessages.value.push({ role: 'assistant', content: payload.message })
     await loadData()
-    notify(run ? `已布设并执行「${proposal.name}」` : `场景「${proposal.name}」已布设`)
+    await loadSessions()
+    notify('场景已布设')
+    await scrollAssistant()
   } catch (cause) {
     notify(cause instanceof Error ? cause.message : '布设失败')
+  }
+}
+
+async function cancelPending(message: AssistantMessage) {
+  const sessionId = activeSessionId.value
+  if (!sessionId) return
+  try {
+    const response = await api(`/api/assistant/sessions/${sessionId}/cancel`, {
+      method: 'POST', body: '{}'
+    })
+    if (!response.ok) return
+    const payload = await response.json()
+    message.pending = false
+    message.applied = true
+    assistantMessages.value.push({ role: 'assistant', content: payload.message })
+    await scrollAssistant()
+  } catch {
+    notify('取消失败')
   }
 }
 
@@ -651,7 +725,7 @@ onMounted(() => { void loadDeviceTypes(); void hydrate() })
             <button class="nav-item" :class="{ selected: selectedSection === 'orders' }" @click="selectedSection = 'orders'">⌁ <span>维修工单</span><em>{{ pending }}</em></button>
             <template v-if="isHome">
               <p>智能助手</p>
-              <button class="nav-item assistant-nav" @click="assistantOpen = !assistantOpen">✦ <span>AI 管家</span><em>看方案</em></button>
+              <button class="nav-item assistant-nav" @click="toggleAssistant()">✦ <span>AI 管家</span><em>看方案</em></button>
             </template>
           </nav>
           <div class="sidebar-footer">
@@ -1027,7 +1101,7 @@ onMounted(() => { void loadDeviceTypes(); void hydrate() })
     </template>
 
     <template v-if="user && isHome">
-      <button class="assistant-fab" @click="assistantOpen = !assistantOpen">
+      <button class="assistant-fab" @click="toggleAssistant()">
         <span class="fab-icon">✦</span>
         <span>AI 管家</span>
       </button>
@@ -1039,6 +1113,16 @@ onMounted(() => { void loadDeviceTypes(); void hydrate() })
             <small>查手册 · 查设备 · 帮您报修</small>
           </div>
           <button @click="assistantOpen = false">收起</button>
+        </div>
+
+        <div class="session-bar">
+          <select :value="activeSessionId ?? ''" @change="onSessionChange">
+            <option value="" disabled>选择对话…</option>
+            <option v-for="item in agentSessions" :key="item.id" :value="item.id">
+              {{ item.title }}<template v-if="item.status === 'pending_confirm'"> · 待确认</template>
+            </option>
+          </select>
+          <button class="ghost" @click="newChat">新对话</button>
         </div>
 
         <div ref="assistantBox" class="assistant-body">
@@ -1074,10 +1158,17 @@ onMounted(() => { void loadDeviceTypes(); void hydrate() })
                 未匹配到：{{ item.proposal.missing.join('、') }}
               </div>
               <p v-if="item.applied" class="proposal-done">✓ 已布设为场景，可在「自动化场景」里执行</p>
-              <div v-else class="proposal-buttons">
-                <button class="primary" @click="applyProposal(item, false)">一键布设</button>
-                <button class="ghost" @click="applyProposal(item, true)">立即执行</button>
+              <div v-else-if="item.pending" class="proposal-buttons">
+                <button class="primary" @click="confirmPending(item)">确认布设</button>
+                <button class="ghost" @click="cancelPending(item)">取消</button>
               </div>
+            </div>
+
+            <div v-if="item.role === 'assistant' && item.intent" class="msg-meta">
+              <span class="intent-chip">{{ item.intent }}</span>
+              <span v-if="item.grounded === false" class="ground-warn">
+                有 {{ (item.warnings || []).length }} 处未溯源
+              </span>
             </div>
           </div>
 

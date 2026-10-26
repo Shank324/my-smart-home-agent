@@ -95,6 +95,9 @@ def main() -> int:
                      "blocked": blocked, "pending": pending, "grounded": grounded,
                      "answer": (reply.get("answer") or "")[:120]})
 
+        # 评测产生的会话不留在用户界面里
+        call(f"/api/assistant/sessions/{sid}", token=token, method="DELETE")
+
     total = len(tasks)
     summary = {
         "label": args.label, "tasks": total,

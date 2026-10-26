@@ -20,6 +20,10 @@
 
 <img src="docs/ai-proposal.png" width="440" alt="AI 场景方案">
 
+**AI 会话** · 多会话切换、待确认动作、意图标记
+
+<img src="docs/agent-session.png" width="760" alt="AI 会话与确认">
+
 **维修人员工作台** · 工单统计、优先级标记、状态流转时间线
 
 <img src="docs/technician-workbench.png" width="820" alt="维修工作台">
@@ -43,16 +47,17 @@
 - 工单池浏览、接单（认领）、状态流转 `open → assigned → in_progress → resolved / cancelled`
 - 工单内实时聊天
 
-**AI 客服 Agent**（页面右下角悬浮入口 / `POST /api/assistant/chat`）
-- 6 个可调用工具：知识库检索、设备列表、设备状态、工单列表、创建工单、**场景设计**
+**AI 客服 Agent**（页面右下角悬浮入口 / `POST /api/assistant/sessions/{id}/messages`）
+- 7 个可调用工具：知识库检索、设备列表、设备状态、**能耗分析**、工单列表、创建工单、**场景设计**
+- **会话持久化**：对话落库，刷新、换设备、重启都不丢；支持多会话切换
+- **意图路由**：咨询 / 报修 / 方案 / 控制四条流，规则优先、模型兜底
+- **可恢复中断**：Agent 提出方案后挂起，命令式确认后才落库。中断状态存数据库而非文件，
+  跨实例、可审计（等价于 LangGraph 的 checkpointer，但不依赖框架）
+- **双向护栏**：输入侧拦截领域外请求，输出侧做落地校验——回答里的设备名必须来自本轮工具结果
 - **把「感受」翻译成「方案」**：用户说「晚上睡不好，感觉空气很粘」，
-  它会判断这是湿度问题 → 查设备 → 产出「睡前除湿助眠」草案（空调除湿 26°C、灯调暗），
-  界面直接给出「一键布设」按钮
-- 草案携带**目标参数**而不只是开关（`{"mode":"dry","temperature":26}`），
-  场景动作表因此增加了 `attributes` 字段
-- 支持多轮修改：用户说「水温再高点到 60、玄关灯降到 30%」，
-  它基于上一版草案增量调整后重新出方案
-- 先检索再回答，答案带**文档溯源**；信息不足时主动追问；涉及安全风险先给断电/通风提示
+  它会判断这是湿度问题 → 查设备 → 产出「睡前除湿助眠」草案（空调除湿 26°C、灯调暗）
+- 能回答**需要时间维度的问题**：「这周哪个房间最费电」「空调开了多久」，
+  数据来自触发器写入的设备状态历史，不是模型猜的
 
 **实时能力**
 - 设备状态变更、工单变更、新消息，全部通过 WebSocket 秒级推送到相关客户端
@@ -315,6 +320,69 @@ POST /api/scenes  ← 复用普通场景接口，草案变成真实场景
 早期版本模型会礼貌地反问「要不要我帮你设计」，导致用户还要多点一次；
 把这条写进系统提示词后行为才稳定。
 
+### 11. 会话持久化与可恢复中断
+
+对话状态落 **数据库**而不是落文件，这是刻意的：
+
+| | 落文件（常见做法） | 落数据库（本项目） |
+|---|---|---|
+| 跨实例 | ❌ 换台机器就丢 | ✅ 任意实例都能恢复 |
+| 可审计 | ❌ | ✅ 能查「谁在什么时候确认了什么」 |
+| 可统计 | ❌ | ✅ 能算「提案放弃率」 |
+| 实现难度 | 低（框架自带） | 中（要自己定义状态机） |
+
+状态机只有三态：`active` →（Agent 提出方案）→ `pending_confirm` →（确认）→ `active`。
+待确认动作存在 `agent_sessions.pending_action` 里，确认时从库中恢复并执行。
+这就是 LangGraph `interrupt` + `checkpointer` 解决的问题，区别是存数据库、索引在 `(user_id, updated_at)`。
+
+### 12. 意图路由与双向护栏
+
+**路由**：规则优先（零成本、可解释），未命中再走模型分类。
+规则踩过的坑：把「场景」单独当 design 关键词，导致「场景执行了但设备没反应」被误分类；
+把故障代码放在 repair 里，导致「空调显示 E1 怎么办」被当成要报修。
+最终语义是 `repair = 明确要求报修`，症状与代码属于 `consult`。
+
+**输入护栏**：领域外请求直接拒。判定顺序是「关键词命中即放行 → 否则问模型 → 模型失败则放行」，
+**失败开放**而不是失败关闭——分类器挂了不该让用户问不了问题。
+
+**输出护栏（落地校验）**分两级：
+
+| 级别 | 校验对象 | 是否影响 `grounded` |
+|---|---|---|
+| 硬校验 | 回答里出现的设备名必须在本轮工具结果或用户原话里 | ✅ |
+| 软校验 | 带单位的数值是否在证据里出现 | ❌ 仅统计 |
+
+数值之所以不进硬校验，是因为模型会把工具结果做除法取整
+（31.7 小时 ÷ 7 天 = 4.5 小时），这类派生值不是幻觉。
+
+---
+
+## 效果评测
+
+不靠形容词，靠两组可复现的评测（脚本在 `eval/`）。
+
+### 检索质量（50 条问题，章节级标注）
+
+| 配置 | Recall@1 | Recall@5 | MRR |
+|---|---|---|---|
+| 纯 BM25 | 0.740 | 0.940 | 0.825 |
+| BM25 + 通义多模态向量（768 维） | **0.860** | **0.980** | **0.906** |
+
+混合检索把 Recall@1 提升了 **12 个百分点**，MRR 提升 **8.1 个百分点**。
+原因是向量通道能命中不含文档原词的同义提问（如「点了开关但是设备没反应」）。
+
+### Agent 任务能力（20 个任务）
+
+| 指标 | 结果 |
+|---|---|
+| 意图路由准确率 | 100% |
+| 工具调用准确率 | 100% |
+| 任务成功率 | 100% |
+| 答案落地率 | 100% |
+| 越权次数 | 0 |
+
+评测口径与注意事项见 [`eval/README.md`](eval/README.md)。
+
 ---
 
 ## 快速开始
@@ -393,8 +461,17 @@ py -m uvicorn backend.main:app --reload --port 8000
 | `GET/POST` | `/api/work-orders/{id}/messages` | 工单内聊天 |
 | `POST` | `/api/knowledge/search` | 知识库检索 |
 | `GET` | `/api/knowledge/status` | 索引状态 |
-| `POST` | `/api/assistant/chat` | **AI 客服对话（工具调用）** |
+| `POST` | `/api/assistant/chat` | **AI 客服对话（无状态，兼容旧客户端）** |
 | `GET` | `/api/assistant/status` | Agent 可用性与工具清单 |
+| `POST` | `/api/assistant/sessions` | 创建会话 |
+| `GET` | `/api/assistant/sessions` | 会话列表 |
+| `GET` | `/api/assistant/sessions/{id}` | 会话详情（含全部消息） |
+| `POST` | `/api/assistant/sessions/{id}/messages` | 发消息：意图路由 + Agent + 护栏 |
+| `POST` | `/api/assistant/sessions/{id}/confirm` | **确认挂起动作（HITL 第二段）** |
+| `POST` | `/api/assistant/sessions/{id}/cancel` | 取消挂起动作 |
+| `DELETE` | `/api/assistant/sessions/{id}` | 删除会话 |
+| `GET` | `/api/stats/energy` | 能耗归因（按房间/时段） |
+| `GET` | `/api/stats/devices/{id}/history` | 单设备状态时间线 |
 | `WS` | `/ws/events?token=` | 实时事件推送 |
 
 ### 调用示例
@@ -404,20 +481,31 @@ TOKEN=$(curl -s -X POST localhost:8000/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"user1","password":"home123"}' | jq -r .access_token)
 
-curl -s -X POST localhost:8000/api/assistant/chat \
+# 1) 建会话
+SID=$(curl -s -X POST localhost:8000/api/assistant/sessions \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' | jq -r .id)
+
+# 2) 提问
+curl -s -X POST localhost:8000/api/assistant/sessions/$SID/messages \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"message":"客厅空调开不起来怎么办？"}' | jq
+  -d '{"message":"帮我设计一个回家洗澡的模式"}' | jq
+
+# 3) 确认布设（HITL 第二段）
+curl -s -X POST localhost:8000/api/assistant/sessions/$SID/confirm \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' | jq
 ```
 
-返回：
+第二轮返回里 `status` 会变成 `pending_confirm`，`proposal` 是结构化草案；
+此时还没有写任何业务数据，确认之后才落库。
 
 ```json
 {
-  "answer": "根据查询结果，给您几点排查建议……",
-  "citations": [{"source": "device_usage.md", "section": "空调"}],
-  "tool_calls": [{"name": "search_knowledge", "ok": true}, {"name": "get_device_status", "ok": true}],
-  "steps": 3,
-  "model": "deepseek-chat"
+  "answer": "方案已生成，确认后布设为场景……",
+  "intent": "design", "status": "pending_confirm",
+  "grounded": true,
+  "proposal": {"name": "回家洗澡", "actions": [
+    {"device_name": "卫生间热水器", "action": "on", "attributes": {"temperature": 55}, "label": "55°C"}
+  ]}
 }
 ```
 
@@ -439,7 +527,10 @@ curl -s -X POST localhost:8000/api/assistant/chat \
 │  ├─ seed.py                    建表与种子数据
 │  ├─ api/knowledge.py           知识库路由
 │  ├─ api/assistant.py           AI 客服路由 + 业务工具注册
-│  ├─ api/stats.py               统计与复杂查询
+│  ├─ api/agent.py               **会话持久化 / 意图路由 / 可恢复确认**
+│  ├─ api/stats.py               统计、复杂查询、能耗归因
+│  ├─ agent_guard.py             **意图分类 / 输入护栏 / 落地校验**
+│  ├─ services.py                场景落库、能耗积分等业务动作
 │  ├─ db_objects.py              视图 / 触发器 / 索引
 │  ├─ device_types.py            设备类型目录 + 参数校验
 │  ├─ requirements.txt
@@ -451,11 +542,18 @@ curl -s -X POST localhost:8000/api/assistant/chat \
 │  └─ knowledge/
 │     ├─ loader.py               Markdown + front matter 解析
 │     ├─ splitter.py             标题层级切分 + 纯标题块过滤
-│     ├─ embedder.py             vLLM / Hash 双实现
+│     ├─ embedder.py             vLLM / 百炼多模态向量 / Hash 三实现
 │     ├─ vector_store.py         Qdrant / JSON 双后端
-│     ├─ retriever.py            混合检索 + RRF
+│     ├─ retriever.py            混合检索 + RRF + 中文二元组分词
 │     └─ schemas.py              Pydantic 数据契约
-├─ seed_data/                    设备手册（知识源）
+├─ eval/                         评测集与脚本
+│  ├─ retrieval_questions.json   50 条检索问题（章节级标注）
+│  ├─ run_retrieval_eval.py      Recall@K / MRR
+│  ├─ tasks.json                 20 个 Agent 任务
+│  └─ run_task_eval.py           意图/工具/成功率/落地率
+├─ scripts/
+│  └─ seed_device_history.py     生成演示用设备历史
+├─ seed_data/                    设备手册（知识源，8 篇约 1.25 万字）
 ├─ docker-compose.yml
 └─ init_knowledge.py             离线索引脚本
 ```
@@ -475,8 +573,13 @@ curl -s -X POST localhost:8000/api/assistant/chat \
 - [x] 工单完工登记（费用 / 工时）
 - [x] 场景动作规范化成关联表（`scene_actions` + 唯一约束 + 级联）
 - [x] 设备类型目录 + 类型化参数校验（表单按类型动态渲染）
-- [ ] 检索评测集与指标（Recall@K、MRR），对比 hash / 真实 embedding
-- [x] 前端 AI 客服对话面板（右下角悬浮入口，带引用展示）
+- [x] 检索评测集与指标（50 条，Recall@1 0.74 → 0.86）
+- [x] 前端 AI 客服对话面板（多会话切换、待确认卡片）
+- [x] Agent 会话持久化 + 意图路由（4 类）+ 可恢复中断确认
+- [x] 输入护栏与答案落地校验（设备名零幻觉）
+- [x] 任务级评测（20 个任务，成功率 100%）
+- [x] 设备状态历史（触发器）+ 能耗归因 + Agent 分析工具
+- [x] 接入百炼通义多模态向量（768 维），混合检索生效
 - [ ] Agent 建单后广播 WebSocket 事件
 - [ ] 流式输出（SSE）
 - [ ] Redis Pub/Sub 替换进程内连接表，支持多实例部署
@@ -497,3 +600,7 @@ curl -s -X POST localhost:8000/api/assistant/chat \
 - ORM 会话配置了 `expire_on_commit=False`，因此读不到触发器就地写入的字段，需重新查库
 - 设备参数存在 JSON 列里，**不能**用 SQL 直接按「温度 > 26」筛选；需要时应改为独立列或加生成列
 - 登录 token 存于进程内，后端容器重启后所有人需要重新登录（前端已给明确提示，不再静默踢回）
+- 评测集规模有限（检索 50 条、任务 20 条），用于回归与量化，不代表线上分布
+- 设备历史只统计有记录的时间段；新部署时历史为空，可用 `scripts/seed_device_history.py` 生成演示数据
+- 能耗按「额定功率 × 通电时长」估算，没有考虑变频与待机功耗，属于区间估计
+- 意图路由以规则为主，长尾表达依赖模型兜底，边界样例仍需持续补充
