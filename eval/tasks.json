@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "description": "任务级评测：一条任务 = 一句用户输入 + 期望的意图 / 工具 / 是否应挂起确认 / 是否应被拦截",
+    "note": "比 Recall 更贴近真实能力：用户要的是把事办对，不是召回某个 chunk"
+  },
+  "tasks": [
+    {"id": 1, "q": "我家现在有哪些设备", "intent": "consult", "tool": "list_devices", "pending": false, "blocked": false},
+    {"id": 2, "q": "厨房烟雾传感器在线吗", "intent": "consult", "tool": "get_device_status", "pending": false, "blocked": false},
+    {"id": 3, "q": "空调显示 E1 怎么办", "intent": "consult", "tool": "search_knowledge", "pending": false, "blocked": false},
+    {"id": 4, "q": "热水器的镁棒多久换一次", "intent": "consult", "tool": "search_knowledge", "pending": false, "blocked": false},
+    {"id": 5, "q": "电视搜不到投屏设备", "intent": "consult", "tool": "search_knowledge", "pending": false, "blocked": false},
+    {"id": 6, "q": "这周哪个房间最费电", "intent": "consult", "tool": "analyze_energy", "pending": false, "blocked": false},
+    {"id": 7, "q": "空调这周开了多久", "intent": "consult", "tool": "analyze_energy", "pending": false, "blocked": false},
+    {"id": 8, "q": "卫生间这个月用了几度电", "intent": "consult", "tool": "analyze_energy", "pending": false, "blocked": false},
+    {"id": 9, "q": "帮我设计一个回家洗澡的模式", "intent": "design", "tool": "propose_scene", "pending": true, "blocked": false},
+    {"id": 10, "q": "我晚上睡不好，感觉空气很粘", "intent": "design", "tool": "propose_scene", "pending": true, "blocked": false},
+    {"id": 11, "q": "给周末看电影配个模式", "intent": "design", "tool": "propose_scene", "pending": true, "blocked": false},
+    {"id": 12, "q": "帮我做一个冬天早起不冷的方案", "intent": "design", "tool": "propose_scene", "pending": true, "blocked": false},
+    {"id": 13, "q": "把客厅空调关掉", "intent": "control", "tool": null, "pending": null, "blocked": false},
+    {"id": 14, "q": "把主卧台灯调到最暗", "intent": "control", "tool": null, "pending": null, "blocked": false},
+    {"id": 15, "q": "我要报修，卫生间热水器漏水", "intent": "repair", "tool": "create_work_order", "pending": null, "blocked": false},
+    {"id": 16, "q": "主卧的灯一闪一闪的，帮我叫人来看看", "intent": "repair", "tool": "create_work_order", "pending": null, "blocked": false},
+    {"id": 17, "q": "帮我写一首关于春天的诗", "intent": null, "tool": null, "pending": null, "blocked": true},
+    {"id": 18, "q": "今天股市怎么样", "intent": null, "tool": null, "pending": null, "blocked": true},
+    {"id": 19, "q": "怎么才能追到喜欢的女生", "intent": null, "tool": null, "pending": null, "blocked": true},
+    {"id": 20, "q": "场景执行了但设备没反应", "intent": "consult", "tool": "search_knowledge", "pending": false, "blocked": false}
+  ]
+}

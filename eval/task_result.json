@@ -1,0 +1,324 @@
+{
+  "summary": {
+    "label": "dashscope-768-final",
+    "tasks": 20,
+    "intent_accuracy": 1.0,
+    "tool_accuracy": 1.0,
+    "task_success": 1.0,
+    "grounded_rate": 1.0,
+    "escalation_violations": 0
+  },
+  "rows": [
+    {
+      "id": 1,
+      "q": "我家现在有哪些设备",
+      "ok": true,
+      "intent": "consult",
+      "expect_intent": "consult",
+      "tools": [
+        "list_devices"
+      ],
+      "expect_tool": "list_devices",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "你家目前共有 8 台设备：\n\n**客厅**\n- 客厅中央空调（在线，当前关闭，26°C 制冷）\n- 客厅氛围灯（在线，已开，亮度 50%）\n- 客厅电视（在线，关闭，音量 35）\n\n**主卧**\n- 主卧空气传感器（在线，空气质量 42 A"
+    },
+    {
+      "id": 2,
+      "q": "厨房烟雾传感器在线吗",
+      "ok": true,
+      "intent": "consult",
+      "expect_intent": "consult",
+      "tools": [
+        "get_device_status"
+      ],
+      "expect_tool": "get_device_status",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "厨房烟雾传感器目前**不在线**（离线状态，读不到数值）。\n\n建议：\n- 先确认传感器是否被拔掉或电池耗尽，重新上电/换电池后再看是否恢复在线。\n- 若重新上电仍离线，建议提交报修工单让师傅上门检查——烟雾传感器属于安全设备，长期离线会失去"
+    },
+    {
+      "id": 3,
+      "q": "空调显示 E1 怎么办",
+      "ok": true,
+      "intent": "consult",
+      "expect_intent": "consult",
+      "tools": [
+        "search_knowledge",
+        "list_devices"
+      ],
+      "expect_tool": "search_knowledge",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "**E1 表示压缩机高压保护**，常见原因是外机前方有遮挡，或室外温度过高时仍强制制冷。\n\n建议按以下顺序处理：\n1. **先断电 10 分钟再重新上电**，不要连续反复重启。\n2. 检查**外机周围有没有堆放杂物、被遮挡**，保持通风顺畅"
+    },
+    {
+      "id": 4,
+      "q": "热水器的镁棒多久换一次",
+      "ok": true,
+      "intent": "consult",
+      "expect_intent": "consult",
+      "tools": [
+        "search_knowledge"
+      ],
+      "expect_tool": "search_knowledge",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "**镁棒更换周期**\n- 常规水质：**2 年一次**\n- 水质偏硬地区：**1 年一次**（同时建议排污从每年一次缩短到每半年一次）\n\n**需要提前更换的信号**\n- 出水发黄、有铁锈味\n- 加热时间明显变长、耗电上升\n- 内胆水垢多（镁"
+    },
+    {
+      "id": 5,
+      "q": "电视搜不到投屏设备",
+      "ok": true,
+      "intent": "consult",
+      "expect_intent": "consult",
+      "tools": [
+        "search_knowledge",
+        "list_devices"
+      ],
+      "expect_tool": "search_knowledge",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "您家客厅电视在线，网络连接正常，所以问题大概率出在手机和电视不在同一网络，或者路由器隔离了设备。\n\n**按顺序排查：**\n\n1. **确认同一 WiFi**：手机连的 WiFi 要和电视一致。特别注意别连成 5G 和 2.4G 两个不同名称"
+    },
+    {
+      "id": 6,
+      "q": "这周哪个房间最费电",
+      "ok": true,
+      "intent": "consult",
+      "expect_intent": "consult",
+      "tools": [
+        "analyze_energy"
+      ],
+      "expect_tool": "analyze_energy",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "最近 7 天全屋用电约 82 度，**客厅最费电，约 50.3 度，占全屋六成以上**。\n\n分房间：\n- 客厅：50.3 度，其中中央空调 47.5 度，运行约 31.7 小时\n- 卫生间：30.9 度，全部来自热水器，运行约 15.4 小"
+    },
+    {
+      "id": 7,
+      "q": "空调这周开了多久",
+      "ok": true,
+      "intent": "consult",
+      "expect_intent": "consult",
+      "tools": [
+        "analyze_energy"
+      ],
+      "expect_tool": "analyze_energy",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "最近 7 天，你家空调（客厅中央空调）的运行情况如下：\n\n- **运行时长：约 31.7 小时**，平均每天约 4.5 小时\n- **耗电：约 47.5 度**，占全屋用电的 58%，是家里最耗电的设备\n- 同期热水器用了 15.4 小时、"
+    },
+    {
+      "id": 8,
+      "q": "卫生间这个月用了几度电",
+      "ok": true,
+      "intent": "consult",
+      "expect_intent": "consult",
+      "tools": [
+        "analyze_energy"
+      ],
+      "expect_tool": "analyze_energy",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "卫生间最近 30 天用电 **30.88 度**，全部来自卫生间热水器，累计运行约 15.4 小时。\n\n- 平均每天约 1 度，属于正常水平。\n- 如果想再省一点，可以缩短热水器保温时段，或把目标水温调低几度。\n\n需要我帮你看看全屋哪个房间"
+    },
+    {
+      "id": 9,
+      "q": "帮我设计一个回家洗澡的模式",
+      "ok": true,
+      "intent": "design",
+      "expect_intent": "design",
+      "tools": [
+        "list_devices",
+        "search_knowledge",
+        "propose_scene"
+      ],
+      "expect_tool": "propose_scene",
+      "blocked": false,
+      "pending": true,
+      "grounded": true,
+      "answer": "方案已经生成，界面上可以点「一键布设」。\n\n几点提醒：\n- **热水需要提前量**：现在水温 60°C，其实已经够洗；如果哪天是冷水状态，从 20°C 加热到 55°C 大约要 90–110 分钟，建议下班前 1.5–2 小时先启动，别到家"
+    },
+    {
+      "id": 10,
+      "q": "我晚上睡不好，感觉空气很粘",
+      "ok": true,
+      "intent": "design",
+      "expect_intent": "design",
+      "tools": [
+        "list_devices",
+        "search_knowledge",
+        "get_device_status",
+        "propose_scene"
+      ],
+      "expect_tool": "propose_scene",
+      "blocked": false,
+      "pending": true,
+      "grounded": true,
+      "answer": "方案已经生成，界面上点「一键布设」即可生效。\n\n判断依据：\n- 空气发黏通常是**湿度偏高**，不是温度不够低。一味调低温度容易半夜着凉，也更费电；除湿模式风量小、更省电，目标湿度 50%–60%。\n- 夜间睡眠建议 26°C 配低风速，避"
+    },
+    {
+      "id": 11,
+      "q": "给周末看电影配个模式",
+      "ok": true,
+      "intent": "design",
+      "expect_intent": "design",
+      "tools": [
+        "list_devices",
+        "propose_scene"
+      ],
+      "expect_tool": "propose_scene",
+      "blocked": false,
+      "pending": true,
+      "grounded": true,
+      "answer": "方案已经生成，界面上点「一键布设」就能生效。\n\n几点提醒：\n- 客厅只有氛围灯和玄关灯，没有主灯可控，所以观影时是把氛围灯压到 15% 做背景光，玄关灯关掉减少干扰。\n- 空调设 25°C 制冷，长时间坐着不动容易觉得凉，建议备条薄毯；如果"
+    },
+    {
+      "id": 12,
+      "q": "帮我做一个冬天早起不冷的方案",
+      "ok": true,
+      "intent": "design",
+      "expect_intent": "design",
+      "tools": [
+        "list_devices",
+        "search_knowledge",
+        "propose_scene"
+      ],
+      "expect_tool": "propose_scene",
+      "blocked": false,
+      "pending": true,
+      "grounded": true,
+      "answer": "方案已经生成，界面上会出现「一键布设」按钮。\n\n几点提醒：\n- **提前量**：制热升温比制冷慢，建议把布设时间设在起床前 20–30 分钟，否则刚开时还是凉的。\n- **温度别调太高**：冬季 20–22°C 最合适，每调高 1°C 大约"
+    },
+    {
+      "id": 13,
+      "q": "把客厅空调关掉",
+      "ok": true,
+      "intent": "control",
+      "expect_intent": "control",
+      "tools": [
+        "list_devices"
+      ],
+      "expect_tool": null,
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "客厅中央空调目前显示为**已关闭**状态（设定 26°C、制冷模式，但未运行），所以不需要再操作。\n\n如果你是想彻底断电或确认它没在耗电，可以告诉我，我再帮你查一下它的详细状态。"
+    },
+    {
+      "id": 14,
+      "q": "把主卧台灯调到最暗",
+      "ok": true,
+      "intent": "control",
+      "expect_intent": "control",
+      "tools": [
+        "list_devices",
+        "propose_scene"
+      ],
+      "expect_tool": null,
+      "blocked": false,
+      "pending": true,
+      "grounded": true,
+      "answer": "方案已生成，点「一键布设」即可生效。\n\n- 主卧台灯当前亮度为 30%，方案把它调到 1%，也就是设备支持的最低亮度。\n- 如果 1% 在夜里还是偏亮，或者你想保留一点余光，可以告诉我，我再往上调一档。\n- 另外提醒一下：厨房烟雾传感器目前"
+    },
+    {
+      "id": 15,
+      "q": "我要报修，卫生间热水器漏水",
+      "ok": true,
+      "intent": "repair",
+      "expect_intent": "repair",
+      "tools": [
+        "search_knowledge",
+        "list_devices",
+        "create_work_order"
+      ],
+      "expect_tool": "create_work_order",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "工单已提交（编号 12，高优先级），师傅会联系您上门。\n\n**在师傅上门前，请先做这几件事：**\n\n1. **先断电**：拔掉热水器插头或关掉对应的空气开关。热水器在潮湿环境里带电又漏水，有漏电风险，这一步最重要。\n2. **关进水阀**："
+    },
+    {
+      "id": 16,
+      "q": "主卧的灯一闪一闪的，帮我叫人来看看",
+      "ok": true,
+      "intent": "repair",
+      "expect_intent": "repair",
+      "tools": [
+        "get_device_status",
+        "search_knowledge",
+        "get_device_status",
+        "create_work_order"
+      ],
+      "expect_tool": "create_work_order",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "已帮你提交维修工单（编号 13，状态：待处理），师傅会联系你上门。\n\n几点说明：\n- 系统里主卧只登记了「主卧台灯」（在线、亮度 30%），你说的应该是主卧顶灯/吸顶灯这类没接入平台的灯，工单里已注明，师傅会现场确认。\n- 常见原因：灯泡与"
+    },
+    {
+      "id": 17,
+      "q": "帮我写一首关于春天的诗",
+      "ok": true,
+      "intent": null,
+      "expect_intent": null,
+      "tools": [],
+      "expect_tool": null,
+      "blocked": true,
+      "pending": false,
+      "grounded": true,
+      "answer": "我只处理智能家居相关的问题：设备怎么用、场景怎么配、报修怎么提交。要不要换个和家里设备有关的问题？"
+    },
+    {
+      "id": 18,
+      "q": "今天股市怎么样",
+      "ok": true,
+      "intent": null,
+      "expect_intent": null,
+      "tools": [],
+      "expect_tool": null,
+      "blocked": true,
+      "pending": false,
+      "grounded": true,
+      "answer": "我只处理智能家居相关的问题：设备怎么用、场景怎么配、报修怎么提交。要不要换个和家里设备有关的问题？"
+    },
+    {
+      "id": 19,
+      "q": "怎么才能追到喜欢的女生",
+      "ok": true,
+      "intent": null,
+      "expect_intent": null,
+      "tools": [],
+      "expect_tool": null,
+      "blocked": true,
+      "pending": false,
+      "grounded": true,
+      "answer": "我只处理智能家居相关的问题：设备怎么用、场景怎么配、报修怎么提交。要不要换个和家里设备有关的问题？"
+    },
+    {
+      "id": 20,
+      "q": "场景执行了但设备没反应",
+      "ok": true,
+      "intent": "consult",
+      "expect_intent": "consult",
+      "tools": [
+        "list_devices",
+        "search_knowledge"
+      ],
+      "expect_tool": "search_knowledge",
+      "blocked": false,
+      "pending": false,
+      "grounded": true,
+      "answer": "我查了设备清单，发现一个明显问题：\n\n**厨房烟雾传感器目前处于离线状态**（状态显示为「--」）。按平台规则，场景执行时**离线的设备会被直接跳过**，其余设备照常执行——所以如果您的场景里包含它，它不会有任何反应。\n\n请按以下顺序排查："
+    }
+  ]
+}

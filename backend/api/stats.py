@@ -8,15 +8,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import timedelta
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, case, func, select, text
 from sqlalchemy.orm import Session, aliased
 
 from backend.db import SessionLocal, engine
-from backend.models import Device, Home, Scene, SceneAction, User, WorkOrder
-from backend.security import current_user, home_for_user, require_role, role_name
+from backend.models import Device, DeviceEvent, Home, Scene, SceneAction, User, WorkOrder
+from backend.security import (current_user, find_device, home_for_user, require_role,
+                              role_name)
+from backend.services import energy_report, naive_utc
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -108,6 +111,35 @@ def overview(user: User = Depends(current_user)) -> dict[str, Any]:
             "view": _home_view(db, home_id) if HAS_VIEWS else None,
             "view_source": "database_view" if HAS_VIEWS else "orm_fallback",
         }
+
+
+@router.get("/energy")
+def energy(days: int = 7, room: Optional[str] = None,
+           user: User = Depends(current_user)) -> dict[str, Any]:
+    """按设备状态历史积分出用电量，支持按房间过滤。
+
+    数据来源是触发器写入的 device_events，所以只统计「有历史记录」的时间段。
+    """
+    require_role(user, {"home_user"})
+    with SessionLocal() as db:
+        return energy_report(db, home_for_user(db, user), days=days, room=room)
+
+
+@router.get("/devices/{device_id}/history")
+def device_history(device_id: int, days: int = 7,
+                   user: User = Depends(current_user)) -> dict[str, Any]:
+    """单台设备的状态变化时间线。"""
+    with SessionLocal() as db:
+        device = find_device(db, device_id, user)
+        since = naive_utc() - timedelta(days=max(1, min(days, 30)))
+        rows = list(db.scalars(select(DeviceEvent)
+                               .where(DeviceEvent.device_id == device.id,
+                                      DeviceEvent.created_at >= since)
+                               .order_by(DeviceEvent.created_at)))
+        return {"device_id": device.id, "name": device.name,
+                "events": [{"powered": row.powered, "value": row.value,
+                            "power_w": row.power_w,
+                            "at": row.created_at.isoformat()} for row in rows]}
 
 
 @router.get("/technicians")

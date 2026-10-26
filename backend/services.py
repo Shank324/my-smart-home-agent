@@ -3,12 +3,70 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from itertools import groupby
+from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models import Device, Scene, SceneAction, WorkOrder
+from backend.models import Device, DeviceEvent, Scene, SceneAction, WorkOrder
+
+
+def naive_utc() -> datetime:
+    """数据库里存的是 naive UTC，比较时也要用 naive。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def energy_report(db: Session, home_id: int, days: int = 7,
+                  room: Optional[str] = None) -> dict[str, Any]:
+    """按设备状态历史积分出用电量。
+
+    算法：每台设备的事件按时间排序，相邻两条之间若处于通电状态，
+    则 用电量 += 额定功率 × 时长。最后一条事件到「现在」也计入。
+    """
+    window = max(1, min(int(days or 7), 30))
+    now = naive_utc()
+    since = now - timedelta(days=window)
+    devices = {device.id: device for device in
+               db.scalars(select(Device).where(Device.home_id == home_id))}
+    events = list(db.scalars(select(DeviceEvent)
+                             .where(DeviceEvent.home_id == home_id,
+                                    DeviceEvent.created_at >= since)
+                             .order_by(DeviceEvent.device_id, DeviceEvent.created_at,
+                                       DeviceEvent.id)))
+    per_device: list[dict[str, Any]] = []
+    for device_id, group in groupby(events, key=lambda event: event.device_id):
+        rows = list(group)
+        device = devices.get(device_id)
+        if device is None:
+            continue
+        if room and room not in device.room:
+            continue
+        kwh = 0.0
+        seconds = 0.0
+        for index, event in enumerate(rows):
+            if not event.powered:
+                continue
+            end = rows[index + 1].created_at if index + 1 < len(rows) else now
+            span = max((end - event.created_at).total_seconds(), 0.0)
+            seconds += span
+            kwh += event.power_w * span / 3600 / 1000
+        if kwh <= 0 and seconds <= 0:
+            continue
+        per_device.append({"device_id": device_id, "name": device.name, "room": device.room,
+                           "kwh": round(kwh, 3), "hours": round(seconds / 3600, 2)})
+    per_device.sort(key=lambda item: item["kwh"], reverse=True)
+    per_room: dict[str, float] = {}
+    for item in per_device:
+        per_room[item["room"]] = round(per_room.get(item["room"], 0.0) + item["kwh"], 3)
+    return {"days": window, "room_filter": room or None,
+            "total_kwh": round(sum(item["kwh"] for item in per_device), 3),
+            "total_hours": round(sum(item["hours"] for item in per_device), 2),
+            "by_room": [{"room": key, "kwh": value}
+                        for key, value in sorted(per_room.items(), key=lambda kv: -kv[1])],
+            "by_device": per_device[:10],
+            "has_history": bool(events)}
 
 
 def unique_scene_name(db: Session, home_id: int, name: str) -> str:

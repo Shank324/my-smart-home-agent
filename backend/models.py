@@ -167,10 +167,31 @@ class WorkOrderMessage(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
 
 
+class DeviceEvent(Base):
+    """设备状态变化历史，由数据库触发器写入。
+
+    智能家居只存「当前状态」是设计缺陷：没有时间序列就无法回答
+    「昨天客厅空调开了多久、耗了多少电」。触发器保证任何一条 UPDATE 都留痕，
+    应用层不需要（也无法）记得每条修改路径。
+    """
+
+    __tablename__ = "device_events"
+    __table_args__ = (Index("idx_device_events_device", "device_id", "id"),
+                      Index("idx_device_events_home_time", "home_id", "created_at"))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_id = Column(ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    home_id = Column(Integer, nullable=False)
+    powered = Column(Boolean, default=False, nullable=False)
+    value = Column(String(40), default="", nullable=False)
+    power_w = Column(Float, default=0.0, nullable=False)
+    attributes = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+
 class AgentSession(Base):
     """一次 Agent 对话会话。
 
-    会话状态落库而不是落文件，好处是跨实例、可审计、可统计（例如确认放弃率）。
+    会话状态落库而不是落文件：跨实例、可审计、可统计（例如确认放弃率）。
     """
 
     __tablename__ = "agent_sessions"

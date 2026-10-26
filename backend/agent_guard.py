@@ -20,7 +20,9 @@ INTENTS = ("consult", "repair", "design", "control")
 # 注意 repair 只收「明确的报修动作」，症状描述和故障代码属于 consult：
 # 「空调显示 E1 怎么办」是在问原因，不是要报修。
 _RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("design", ("设计", "方案", "模式", "场景", "布置", "帮我配", "怎么配", "搭配",
+    # 注意别把「场景」单独作为 design 关键词：
+    # 「场景执行了但设备没反应」是排查咨询，不是要设计场景
+    ("design", ("设计", "方案", "模式", "布置", "帮我配", "怎么配", "搭配",
                 "睡前", "入睡", "睡不好", "失眠", "回家", "观影", "看电影", "洗澡",
                 "起床", "潮湿", "发黏", "发闷", "太干")),
     ("repair", ("报修", "维修", "帮我修", "修一下", "找人看", "上门", "叫师傅", "师傅",
@@ -100,27 +102,52 @@ def _normalize(text: str) -> str:
 
 def check_grounding(answer: str, evidence: str, user_message: str,
                     device_names: list[str]) -> dict[str, Any]:
-    """校验回答里的设备名与带单位的数值是否都能在本轮证据里找到出处。
+    """校验回答的落地性，分两级：
 
-    这只覆盖「可硬校验」的部分：设备名和数值。
-    主观表述（"建议""可能"）不参与判定。
+    - **硬校验（决定 grounded）**：回答里出现的设备名，必须在本轮工具结果或用户原话里出现过。
+      设备名编错是最典型的幻觉（把「客厅空调」说成「主卧空调」）。
+    - **软校验（仅统计）**：带单位的数值是否在证据里出现过。
+      模型会把工具结果做除法、取整（31.7 小时 / 7 天 = 4.5 小时），
+      这类派生值不应算幻觉，所以单独列出来供人工看，不参与 grounded 判定。
     """
     answer_norm = _normalize(answer)
     evidence_norm = _normalize(evidence)
     user_norm = _normalize(user_message)
-    warnings: list[str] = []
 
+    device_violations: list[str] = []
     for name in device_names:
         key = _normalize(name)
         if key and key in answer_norm and key not in evidence_norm and key not in user_norm:
-            warnings.append(f"device:{name}")
+            device_violations.append(name)
+
+    numeric_unverified: list[str] = []
+    evidence_numbers = [float(item) for item in re.findall(r"\d+(?:\.\d+)?", evidence or "")]
+
+    def numeric_found(token: str) -> bool:
+        core = re.match(r"\d+(?:\.\d+)?", token)
+        if not core:
+            return True
+        literal = core.group()
+        if literal in evidence_norm:
+            return True
+        value = float(literal)
+        # 允许四舍五入：31.67 -> 31.7
+        return any(abs(value - candidate) <= max(abs(value) * 0.01, 0.05)
+                   for candidate in evidence_numbers)
 
     for raw in _NUMBER_WITH_UNIT.findall(answer or ""):
         token = _normalize(raw)
-        if token and token not in evidence_norm and token not in user_norm:
-            # 允许范围表述里的边界值，例如 24-26°C 拆出来的 26°C
-            if token not in evidence_norm.replace("-", ""):
-                warnings.append(f"value:{raw.strip()}")
+        if not token or token in evidence_norm or token in user_norm:
+            continue
+        # 百分比通常是比例计算的结果，不参与判定
+        if token.endswith("%"):
+            continue
+        if numeric_found(token):
+            continue
+        numeric_unverified.append(raw.strip())
 
-    return {"grounded": not warnings, "warnings": warnings[:8],
+    return {"grounded": not device_violations,
+            "device_violations": device_violations,
+            "numeric_unverified": numeric_unverified[:8],
+            "warnings": device_violations[:8],
             "checked_devices": len(device_names)}

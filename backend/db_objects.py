@@ -74,25 +74,55 @@ INDEXES: dict[str, tuple[str, str]] = {
     "idx_work_orders_priority": ("work_orders", "priority"),
     "idx_devices_home_type": ("devices", "home_id, type"),
     "idx_work_order_events_order": ("work_order_events", "work_order_id, id"),
+    "idx_device_events_device": ("device_events", "device_id, id"),
+    "idx_device_events_home_time": ("device_events", "home_id, created_at"),
 }
 
-TRIGGER_NAME = "trg_work_order_status_change"
-TRIGGER_BODY = """
-CREATE TRIGGER trg_work_order_status_change
-BEFORE UPDATE ON work_orders
-FOR EACH ROW
-BEGIN
-    IF NEW.status <> OLD.status THEN
-        IF NEW.status = 'resolved' THEN
-            SET NEW.resolved_at = UTC_TIMESTAMP();
-        END IF;
-        INSERT INTO work_order_events
-            (work_order_id, from_status, to_status, actor_id, created_at)
+# 触发器名 -> 建表语句
+TRIGGERS: dict[str, str] = {
+    "trg_work_order_status_change": """
+        CREATE TRIGGER trg_work_order_status_change
+        BEFORE UPDATE ON work_orders
+        FOR EACH ROW
+        BEGIN
+            IF NEW.status <> OLD.status THEN
+                IF NEW.status = 'resolved' THEN
+                    SET NEW.resolved_at = UTC_TIMESTAMP();
+                END IF;
+                INSERT INTO work_order_events
+                    (work_order_id, from_status, to_status, actor_id, created_at)
+                VALUES
+                    (NEW.id, OLD.status, NEW.status, NEW.assigned_to, UTC_TIMESTAMP());
+            END IF;
+        END
+    """,
+    # 设备状态变化留痕：开关 / 数值 / 在线状态任一变化都记一条
+    "trg_device_state_change": """
+        CREATE TRIGGER trg_device_state_change
+        AFTER UPDATE ON devices
+        FOR EACH ROW
+        BEGIN
+            IF NEW.active <> OLD.active OR NEW.value <> OLD.value OR NEW.online <> OLD.online THEN
+                INSERT INTO device_events
+                    (device_id, home_id, powered, value, power_w, attributes, created_at)
+                VALUES
+                    (NEW.id, NEW.home_id, NEW.active, NEW.value, NEW.power_consumption,
+                     NEW.attributes, UTC_TIMESTAMP());
+            END IF;
+        END
+    """,
+    # 新设备建档时写入初始状态，历史才有起点
+    "trg_device_created": """
+        CREATE TRIGGER trg_device_created
+        AFTER INSERT ON devices
+        FOR EACH ROW
+        INSERT INTO device_events
+            (device_id, home_id, powered, value, power_w, attributes, created_at)
         VALUES
-            (NEW.id, OLD.status, NEW.status, NEW.assigned_to, UTC_TIMESTAMP());
-    END IF;
-END
-"""
+            (NEW.id, NEW.home_id, NEW.active, NEW.value, NEW.power_consumption,
+             NEW.attributes, UTC_TIMESTAMP())
+    """,
+}
 
 
 def _index_exists(conn, table: str, index_name: str) -> bool:
@@ -127,10 +157,11 @@ def ensure_db_objects() -> dict[str, int]:
             conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
             created["indexes"] += 1
 
-        if _trigger_exists(conn, TRIGGER_NAME):
-            conn.execute(text(f"DROP TRIGGER {TRIGGER_NAME}"))
-        conn.execute(text(TRIGGER_BODY))
-        created["triggers"] += 1
+        for name, body in TRIGGERS.items():
+            if _trigger_exists(conn, name):
+                conn.execute(text(f"DROP TRIGGER {name}"))
+            conn.execute(text(body))
+            created["triggers"] += 1
 
     logger.info("数据库对象就绪: %s", created)
     return created

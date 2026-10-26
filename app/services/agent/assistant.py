@@ -36,8 +36,12 @@ DEFAULT_SYSTEM_PROMPT = """你是「智家管家」，一个智能家居平台�
 其它工具：
 - search_knowledge：查设备手册和常见问题，回答故障、操作方法前必须先查
 - get_device_status：单个设备的详细状态
+- analyze_energy：统计最近 N 天各设备/各房间的用电量与运行时长。
+  用户问「电费为什么高」「空调开了多久」「哪个房间最费电」时必须调用它，不要凭感觉答
 - list_work_orders：查报修记录
-- create_work_order：用户明确要求报修时才建单
+- create_work_order：**用户明确要求报修或叫人上门时，直接建单，不要先反问**。
+  把已知信息写进标题和描述，缺失的细节让用户在工单对话里补充；
+  涉及安全的（漏水、冒烟、漏电）优先级用 high 或 urgent。
 
 回答要求：
 1. 涉及设备故障、操作方法时，先用 search_knowledge 查证，不要凭记忆回答。

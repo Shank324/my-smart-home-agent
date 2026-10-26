@@ -21,6 +21,7 @@ from backend.api.knowledge import retriever
 from backend.db import SessionLocal
 from backend.models import Device, User, WorkOrder
 from backend.security import current_user, home_for_user, role_name
+from backend.services import energy_report
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
 
@@ -240,6 +241,23 @@ def build_registry(user: User) -> ToolRegistry:
                              "actions": resolved, "missing": missing}}
 
     @registry.register(
+        "analyze_energy",
+        "统计最近 N 天各设备与各房间的用电量和运行时长（数据来自设备状态历史）。"
+        "用户问「电费为什么高」「空调开了多久」「哪个房间最费电」时必须调用。",
+        {"type": "object",
+         "properties": {
+             "days": {"type": "integer", "description": "统计天数，默认 7，范围 1-30"},
+             "room": {"type": "string", "description": "只统计某个房间，如 客厅；留空表示全屋"},
+         }})
+    def analyze_energy(days: int = 7, room: str = "") -> dict[str, Any]:
+        with SessionLocal() as db:
+            home_id = home_for_user(db, user)
+            report = energy_report(db, home_id, days=days, room=room or None)
+        if not report["has_history"]:
+            report["hint"] = "这段时间没有设备状态变化记录，无法统计；需要设备被开关过才有数据"
+        return report
+
+    @registry.register(
         "list_work_orders",
         "列出当前用户的维修工单及状态。",
         {"type": "object", "properties": {}})
@@ -278,7 +296,7 @@ def build_registry(user: User) -> ToolRegistry:
     return registry
 
 
-TOOL_NAMES = ("search_knowledge", "list_devices", "get_device_status",
+TOOL_NAMES = ("search_knowledge", "list_devices", "get_device_status", "analyze_energy",
               "list_work_orders", "create_work_order", "propose_scene")
 
 

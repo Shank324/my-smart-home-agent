@@ -182,6 +182,7 @@ def send_message(session_id: int, request: TurnRequest,
                 "answer": result["answer"], "intent": intent, "intent_source": intent_source,
                 "blocked": False, "citations": result["citations"], "proposal": proposal,
                 "grounded": grounding["grounded"], "warnings": grounding["warnings"],
+                "numeric_unverified": grounding.get("numeric_unverified", []),
                 "steps": result.get("steps", 0),
                 "pending_action": pending_payload(conversation.pending_action) or None}
 
