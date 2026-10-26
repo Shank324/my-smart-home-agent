@@ -21,6 +21,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.api.agent import router as agent_router
 from backend.api.assistant import router as assistant_router
 from backend.api.knowledge import router as knowledge_router
 from backend.api.stats import router as stats_router
@@ -190,6 +191,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="SmartHome Ops Platform", version="0.5.0", lifespan=lifespan)
 app.include_router(knowledge_router)
 app.include_router(assistant_router)
+app.include_router(agent_router)
 app.include_router(stats_router)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"],
                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])

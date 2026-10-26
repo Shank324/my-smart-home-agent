@@ -74,6 +74,7 @@ class Assistant:
 
         citations: list[dict[str, Any]] = []
         trace: list[dict[str, Any]] = []
+        evidence: list[str] = []
         proposal: Optional[dict[str, Any]] = None
         answer = ""
 
@@ -84,7 +85,7 @@ class Assistant:
 
             if not tool_calls:
                 return {"answer": answer, "citations": citations, "tool_calls": trace,
-                        "proposal": proposal, "steps": step}
+                        "proposal": proposal, "evidence": "\n".join(evidence), "steps": step}
 
             # 把 assistant 的 tool_calls 原样回传，否则下一轮模型会丢上下文
             messages.append({"role": "assistant", "content": answer, "tool_calls": tool_calls})
@@ -109,6 +110,8 @@ class Assistant:
                 if name == "propose_scene" and isinstance(result.get("proposal"), dict):
                     proposal = result["proposal"]
 
+                evidence.append(json.dumps(result, ensure_ascii=False)[:4000])
+
                 trace.append({"name": name, "arguments": raw_arguments, "ok": ok,
                               "result_preview": json.dumps(result, ensure_ascii=False)[:300]})
                 messages.append({"role": "tool", "tool_call_id": call.get("id"),
@@ -116,4 +119,5 @@ class Assistant:
 
         return {"answer": answer or "抱歉，这个问题我需要更多信息才能回答。",
                 "citations": citations, "tool_calls": trace, "proposal": proposal,
+                "evidence": "\n".join(evidence),
                 "steps": self.max_steps, "truncated": True}

@@ -165,3 +165,37 @@ class WorkOrderMessage(Base):
     sender_id = Column(ForeignKey("users.id"), nullable=False)
     message = Column(String(2000), nullable=False)
     created_at = Column(DateTime, default=utcnow, nullable=False)
+
+
+class AgentSession(Base):
+    """一次 Agent 对话会话。
+
+    会话状态落库而不是落文件，好处是跨实例、可审计、可统计（例如确认放弃率）。
+    """
+
+    __tablename__ = "agent_sessions"
+    __table_args__ = (Index("idx_agent_sessions_user", "user_id", "updated_at"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(ForeignKey("users.id"), nullable=False)
+    title = Column(String(120), default="新对话", nullable=False)
+    # active | pending_confirm | closed
+    status = Column(String(20), default="active", nullable=False)
+    # 待用户确认的动作：{"type": "scene", "payload": {...}, "summary": "..."}
+    pending_action = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+    __table_args__ = (Index("idx_agent_messages_session", "session_id", "id"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String(20), nullable=False)          # user | assistant
+    content = Column(String(4000), nullable=False)
+    intent = Column(String(20), nullable=True)
+    proposal = Column(JSON, nullable=True)
+    citations = Column(JSON, nullable=True)
+    tool_calls = Column(JSON, nullable=True)
+    grounding = Column(JSON, nullable=True)            # {"grounded": bool, "warnings": [...]}
+    created_at = Column(DateTime, default=utcnow, nullable=False)
