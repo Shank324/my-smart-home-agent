@@ -603,4 +603,6 @@ curl -s -X POST localhost:8000/api/assistant/sessions/$SID/confirm \
 - 评测集规模有限（检索 50 条、任务 20 条），用于回归与量化，不代表线上分布
 - 设备历史只统计有记录的时间段；新部署时历史为空，可用 `scripts/seed_device_history.py` 生成演示数据
 - 能耗按「额定功率 × 通电时长」估算，没有考虑变频与待机功耗，属于区间估计
+- 向量索引是**独立存储**（json 文件或 Qdrant），不放在 MySQL 里：MySQL 8 没有原生向量类型与 ANN 索引。
+  索引已挂到命名卷 `knowledge_index`，容器重建不会丢；语料变更靠指纹检测自动重建
 - 意图路由以规则为主，长尾表达依赖模型兜底，边界样例仍需持续补充
