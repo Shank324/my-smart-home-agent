@@ -28,6 +28,10 @@
 
 <img src="docs/technician-workbench.png" width="820" alt="维修工作台">
 
+**完工登记** · 接单后填写实际费用与工时，提交即置为已解决
+
+<img src="docs/technician-completion.png" width="760" alt="完工登记">
+
 **角色注册** · 家庭用户与维修人员两类账号
 
 <img src="docs/register-roles.png" width="420" alt="角色注册">
