@@ -151,12 +151,6 @@ def create_work_order_from_proposal(db: Session, home_id: int, user_id: int,
     return order
 
 
-def scene_summary(scene: Scene) -> dict[str, Any]:
-    return {"id": scene.id, "name": scene.name, "description": scene.description,
-            "actions": [{"device_id": row.device_id, "action": row.action,
-                         "attributes": row.attributes or {}} for row in scene.action_rows]}
-
-
 def pending_payload(raw: Any) -> dict[str, Any]:
     if not raw:
         return {}

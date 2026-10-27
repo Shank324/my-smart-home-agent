@@ -97,7 +97,6 @@ type TechnicianProfile = {
 const technician = ref<TechnicianProfile | null>(null)
 const pending = computed(() => orders.value.filter((order) => !['resolved', 'cancelled'].includes(order.status)).length)
 const activeOrder = computed(() => orders.value.find((order) => order.id === selectedOrderId.value) ?? null)
-const canManageSelectedOrder = computed(() => !!activeOrder.value && activeOrder.value.assigned_to === user.value?.id)
 const currentTypeInfo = computed(() => deviceTypes.value.find((item) => item.key === deviceForm.value.type) ?? null)
 const attributeFields = computed(() =>
   Object.entries(currentTypeInfo.value?.attributes ?? {}).map(([key, spec]) => ({ key, spec })))

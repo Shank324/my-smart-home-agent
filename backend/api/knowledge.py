@@ -41,14 +41,3 @@ def knowledge_status() -> KnowledgeStatus:
     return KnowledgeStatus(
         ready=bool(retriever.chunks), documents=len(retriever.documents()),
         chunks=len(retriever.chunks), vector_backend=retriever.store.backend)
-
-
-# Compatibility endpoints retained for existing clients.
-@router.get("/documents")
-def list_knowledge_documents():
-    return retriever.documents()
-
-
-@router.post("/rebuild")
-def rebuild_knowledge() -> dict[str, int]:
-    return init_knowledge()

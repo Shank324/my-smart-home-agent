@@ -125,7 +125,7 @@ flowchart LR
 
 用户：是普通吸顶灯，已经断电了
   │
-  └─▶ create_work_order(标题, 描述)        → 工单 #2 已创建
+  └─▶ propose_work_order(标题, 现象, 设备)  → 生成结构化草稿，用户确认后建单
 ```
 
 ---
@@ -207,7 +207,7 @@ score(doc) = Σ  1 / (k + rank_i(doc))     k = 60
 ### 5. 降级设计：外部依赖挂了不能整站不可用
 
 `create_embedder()` 按环境变量在 vLLM / 本地 Hash 之间切换，无外网环境也能跑通检索链路。
-向量后端同理：`KNOWLEDGE_VECTOR_BACKEND=qdrant|json`。LLM 未配置时 `/api/assistant/chat`
+向量后端同理：`KNOWLEDGE_VECTOR_BACKEND=qdrant|json`。LLM 未配置时 `/api/assistant/sessions/{id}/messages`
 返回 503，其余功能完全不受影响。
 
 > 注意：DeepSeek 官方 API **不提供 embedding 接口**（`/v1/embeddings` 实测返回 404），
@@ -406,7 +406,7 @@ docker compose up --build -d
 |---|---|
 | API 文档 | http://localhost:8000/docs |
 | 健康检查 | http://localhost:8000/api/health |
-| AI 客服 | `POST /api/assistant/chat` |
+| AI 客服 | `POST /api/assistant/sessions/{id}/messages` |
 | MySQL | localhost:3308（容器内 mysql:3306，可用 `MYSQL_HOST_PORT` 覆盖） |
 | Redis | localhost:6379 |
 
@@ -468,7 +468,6 @@ py -m uvicorn backend.main:app --reload --port 8000
 | `GET/POST` | `/api/work-orders/{id}/messages` | 工单内聊天 |
 | `POST` | `/api/knowledge/search` | 知识库检索 |
 | `GET` | `/api/knowledge/status` | 索引状态 |
-| `POST` | `/api/assistant/chat` | **AI 客服对话（无状态，兼容旧客户端）** |
 | `GET` | `/api/assistant/status` | Agent 可用性与工具清单 |
 | `POST` | `/api/assistant/sessions` | 创建会话 |
 | `GET` | `/api/assistant/sessions` | 会话列表 |

@@ -1,81 +1,32 @@
-"""AI 客服 Agent 路由。
+"""Agent 工具层与状态查询。
 
 工具实现放在这一层，是因为它们需要数据库和当前登录用户；
 通用的编排循环、LLM 客户端、工具协议都在 app/services/agent 下。
+
+对话入口在 backend/api/agent.py（会话式），本模块只负责：
+- 构造按当前用户限定的工具集
+- 提供 /api/assistant/status 供前端探测可用性
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from backend.device_types import ENUM_LABELS, TYPE_LABELS, normalize_attributes
-from app.services.agent.assistant import Assistant
-from app.services.agent.llm import DeepSeekClient, LLMError
+from app.services.agent.llm import DeepSeekClient
 from app.services.agent.tools import ToolError, ToolRegistry
 from backend.api.knowledge import retriever
 from backend.db import SessionLocal
+from backend.device_types import ENUM_LABELS, TYPE_LABELS, normalize_attributes
 from backend.models import Device, User, WorkOrder
-from backend.security import current_user, home_for_user, role_name
+from backend.security import home_for_user, role_name
 from backend.services import energy_report
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
 
 llm = DeepSeekClient()
-
-
-class HistoryItem(BaseModel):
-    role: str
-    content: str
-
-
-class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
-    history: list[HistoryItem] = Field(default_factory=list)
-    # 上一轮提出的方案，让模型能在用户说「温度再低点」时基于它修改，而不是从零重来
-    last_proposal: Optional[dict[str, Any]] = None
-
-
-class Citation(BaseModel):
-    source: str
-    section: str = ""
-
-
-class ToolCallTrace(BaseModel):
-    name: str
-    arguments: str
-    ok: bool
-    result_preview: str = ""
-
-
-class ProposalAction(BaseModel):
-    device_id: int
-    device_name: str
-    room: str = ""
-    action: str
-    attributes: dict[str, Any] = Field(default_factory=dict)
-    label: str = ""
-
-
-class SceneProposal(BaseModel):
-    name: str
-    description: str = ""
-    rationale: str = ""
-    actions: list[ProposalAction] = Field(default_factory=list)
-    missing: list[str] = Field(default_factory=list)
-
-
-class ChatResponse(BaseModel):
-    answer: str
-    citations: list[Citation] = Field(default_factory=list)
-    tool_calls: list[ToolCallTrace] = Field(default_factory=list)
-    proposal: Optional[SceneProposal] = None
-    steps: int = 0
-    model: str = ""
 
 
 def _device_payload(device: Device) -> dict[str, Any]:
@@ -89,6 +40,7 @@ def _order_payload(order: WorkOrder) -> dict[str, Any]:
     return {"id": order.id, "title": order.title, "description": order.description,
             "status": order.status, "priority": order.priority,
             "created_at": order.created_at.isoformat()}
+
 
 
 def _match_device(text: str, devices: list[Device]) -> Optional[Device]:
@@ -333,60 +285,14 @@ def build_registry(user: User) -> ToolRegistry:
             orders = list(db.scalars(query))
             return {"orders": [_order_payload(order) for order in orders]}
 
-    @registry.register(
-        "create_work_order",
-        "替当前用户提交一条维修工单。只有当用户明确要求报修、且已说明故障现象时才调用。",
-        {"type": "object",
-         "properties": {
-             "title": {"type": "string", "description": "工单标题，不超过 120 字"},
-             "description": {"type": "string", "description": "故障描述，包含房间、设备、现象"},
-             "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"],
-                          "description": "紧急程度，涉及漏电/漏气/冒烟等安全问题用 urgent"}},
-         "required": ["title", "description"]})
-    def create_work_order(title: str, description: str, priority: str = "medium") -> dict[str, Any]:
-        with SessionLocal() as db:
-            if role_name(db, user) != "home_user":
-                raise ToolError("当前账号不是家庭用户，无法提交报修")
-            home_id = home_for_user(db, user)
-            order = WorkOrder(home_id=home_id, created_by=user.id,
-                              title=title.strip()[:120], description=description.strip()[:500],
-                              priority=priority if priority in {"low", "medium", "high", "urgent"} else "medium")
-            db.add(order)
-            db.commit()
-            db.refresh(order)
-            return {"created": True, "order": _order_payload(order)}
-
     return registry
 
 
 TOOL_NAMES = ("search_knowledge", "list_devices", "get_device_status", "analyze_energy",
-              "list_work_orders", "create_work_order", "propose_work_order", "propose_scene")
+              "list_work_orders", "propose_work_order", "propose_scene")
 
 
 @router.get("/status")
 def assistant_status() -> dict[str, Any]:
     return {"configured": llm.configured, "model": llm.model,
             "knowledge_ready": bool(retriever.chunks), "tools": list(TOOL_NAMES)}
-
-
-@router.post("/chat", response_model=ChatResponse)
-def assistant_chat(request: ChatRequest, user: User = Depends(current_user)) -> ChatResponse:
-    if not llm.configured:
-        raise HTTPException(503, "llm_not_configured")
-    assistant = Assistant(llm, build_registry(user))
-    history = [item.model_dump() for item in request.history]
-    if request.last_proposal:
-        # 让模型看到上一版方案，用户说「再低一点」时才能做增量修改
-        history.append({"role": "assistant",
-                        "content": "我上一轮给出的方案（可以在此基础上修改）："
-                                   + json.dumps(request.last_proposal, ensure_ascii=False)})
-    try:
-        result = assistant.chat(request.message, history)
-    except LLMError as exc:
-        raise HTTPException(503, str(exc)) from exc
-    proposal = result.get("proposal")
-    return ChatResponse(answer=result["answer"],
-                        citations=[Citation(**item) for item in result["citations"]],
-                        tool_calls=[ToolCallTrace(**item) for item in result["tool_calls"]],
-                        proposal=SceneProposal(**proposal) if proposal else None,
-                        steps=result["steps"], model=llm.model)
