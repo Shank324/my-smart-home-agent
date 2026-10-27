@@ -1,0 +1,105 @@
+# 生产编排：不含源码挂载、不暴露数据库端口、API 多 worker
+#
+#   cp .env.example .env && 填值
+#   ./scripts/deploy.sh
+#
+# 与 docker-compose.yml 的区别：
+#   1. 镜像里没有 dev 依赖和源码挂载，改代码要重新构建
+#   2. MySQL / Redis 不映射到宿主机，只能从容器网络访问
+#   3. API 以 2 个 worker 运行（JWT + Redis 让多进程安全）
+#   4. 前端由 Nginx 托管静态文件，并反代 /api 与 /ws
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-smarthome}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD 必须设置}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-smarthome}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      KNOWLEDGE_EMBEDDER: ${KNOWLEDGE_EMBEDDER:-hash}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-tongyi-embedding-vision-flash-2026-03-06}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      KNOWLEDGE_VECTOR_BACKEND: ${KNOWLEDGE_VECTOR_BACKEND:-json}
+      KNOWLEDGE_DATA_DIR: seed_data
+      KNOWLEDGE_VECTOR_WEIGHT: ${KNOWLEDGE_VECTOR_WEIGHT:-1.0}
+      KNOWLEDGE_BM25_WEIGHT: ${KNOWLEDGE_BM25_WEIGHT:-1.2}
+      KNOWLEDGE_QUERY_REWRITE: ${KNOWLEDGE_QUERY_REWRITE:-0}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 必须设置}
+      JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-86400}
+      REDIS_URL: redis://redis:6379/0
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      # 建表与种子由 deploy.sh 里的 bootstrap 单独执行，避免多 worker 并发
+      SKIP_BOOTSTRAP: "1"
+    command:
+      - uvicorn
+      - backend.main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --workers=2
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    volumes:
+      - ./seed_data:/app/seed_data:ro
+      - knowledge_index:/app/.data
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  web:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    volumes:
+      - ./dist:/usr/share/nginx/html:ro
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  redis_data:
+  knowledge_index:

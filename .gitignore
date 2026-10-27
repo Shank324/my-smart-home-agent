@@ -33,6 +33,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+# 前端生产构建配置（非敏感，需要提交）
+!.env.production
 
 # 编辑器 / 系统
 .vscode/

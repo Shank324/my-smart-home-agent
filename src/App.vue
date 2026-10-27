@@ -21,7 +21,12 @@ type Order = { id: number; title: string; description: string; status: Status; h
 type OrderMessage = { id: number; work_order_id: number; sender_id: number; message: string; created_at: string }
 type Section = 'overview' | 'devices' | 'scenes' | 'stats' | 'orders'
 
-const API_BASE = 'http://localhost:8000'
+// 留空表示同源（生产环境由 Nginx 把 /api 反代到后端）；
+// 本地开发在 .env 里设 VITE_API_BASE=http://localhost:8000
+const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '')
+const WS_BASE = API_BASE
+  ? API_BASE.replace(/^http/, 'ws')
+  : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`
 const TOKEN_KEY = 'smart_home_token'
 const token = ref(localStorage.getItem(TOKEN_KEY) || '')
 const user = ref<User | null>(null)
@@ -207,8 +212,7 @@ async function loadData() {
 function connectSocket() {
   socket.value?.close()
   if (!token.value || !user.value) return
-  const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
-  const ws = new WebSocket(`${scheme}://localhost:8000/ws/events?token=${encodeURIComponent(token.value)}`)
+  const ws = new WebSocket(`${WS_BASE}/ws/events?token=${encodeURIComponent(token.value)}`)
   ws.onmessage = async (event) => {
     const payload = JSON.parse(event.data)
     if (payload.event === 'device_updated') {
@@ -615,6 +619,73 @@ async function onSessionChange(event: Event) {
   if (value) await openSession(value)
 }
 
+function applyTurnResult(message: AssistantMessage, payload: any) {
+  message.content = payload.answer || '抱歉，我没有得到有效回复。'
+  message.citations = payload.citations || []
+  message.proposal = payload.proposal || undefined
+  message.workOrder = payload.work_order || undefined
+  message.intent = payload.intent || undefined
+  message.grounded = payload.grounded
+  message.warnings = payload.warnings || []
+  message.pending = payload.status === 'pending_confirm'
+}
+
+/** 消费 SSE：meta / delta / done / error。返回 false 表示流式不可用，调用方回退。 */
+async function streamTurn(sessionId: number, text: string,
+                          target: { index: number }): Promise<boolean> {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  if (token.value) headers.set('Authorization', `Bearer ${token.value}`)
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE}/api/assistant/sessions/${sessionId}/messages/stream`, {
+      method: 'POST', headers, body: JSON.stringify({ message: text })
+    })
+  } catch {
+    return false
+  }
+  if (!response.ok || !response.body) return false
+
+  // 必须通过数组下标拿元素：push 进去的原始对象不受 Proxy 管理，
+  // 直接改它不会触发重新渲染（踩过：流式文本只在最后一次性出现）
+  const ensure = (): AssistantMessage => {
+    if (target.index < 0) {
+      assistantMessages.value.push({ role: 'assistant', content: '' })
+      target.index = assistantMessages.value.length - 1
+    }
+    return assistantMessages.value[target.index]
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const blocks = buffer.split('\n\n')
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) {
+      const lines = block.split('\n')
+      const event = lines.find((line) => line.startsWith('event: '))?.slice(7).trim()
+      const raw = lines.find((line) => line.startsWith('data: '))?.slice(6)
+      if (!event || !raw) continue
+      const payload = JSON.parse(raw)
+      if (event === 'meta') {
+        ensure().intent = payload.intent || undefined
+      } else if (event === 'delta') {
+        ensure().content += payload.text || ''
+        if (assistantBox.value) assistantBox.value.scrollTop = assistantBox.value.scrollHeight
+      } else if (event === 'done') {
+        // 流式预览可能包含「我先查一下」这类过渡文本，最终以服务端落库的答案为准
+        applyTurnResult(ensure(), payload)
+      } else if (event === 'error') {
+        throw new Error(payload.detail || '对话失败')
+      }
+    }
+  }
+  return true
+}
+
 async function askAssistant() {
   const text = assistantDraft.value.trim()
   if (!text || assistantBusy.value) return
@@ -624,26 +695,30 @@ async function askAssistant() {
   await scrollAssistant()
   try {
     const sessionId = await ensureSession()
-    const response = await api(`/api/assistant/sessions/${sessionId}/messages`, {
-      method: 'POST',
-      body: JSON.stringify({ message: text })
-    })
-    if (!response.ok) {
-      const detail = await response.json().catch(() => ({}))
-      throw new Error(typeof detail?.detail === 'string' ? detail.detail : 'AI 客服暂时不可用')
+    const target: { index: number } = { index: -1 }
+    let streamed = false
+    try {
+      streamed = await streamTurn(sessionId, text, target)
+    } catch (cause) {
+      if (target.index < 0) throw cause
+      assistantMessages.value[target.index].content =
+        cause instanceof Error ? cause.message : '请求失败'
     }
-    const payload = await response.json()
-    assistantMessages.value.push({
-      role: 'assistant',
-      content: payload.answer || '抱歉，我没有得到有效回复。',
-      citations: payload.citations || [],
-      proposal: payload.proposal || undefined,
-      workOrder: payload.work_order || undefined,
-      intent: payload.intent || undefined,
-      grounded: payload.grounded,
-      warnings: payload.warnings || [],
-      pending: payload.status === 'pending_confirm'
-    })
+    if (!streamed) {
+      // 流式不可用（反代缓冲、浏览器不支持等）就回退到普通接口
+      const response = await api(`/api/assistant/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ message: text })
+      })
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(typeof detail?.detail === 'string' ? detail.detail : 'AI 客服暂时不可用')
+      }
+      const payload = await response.json()
+      const message: AssistantMessage = { role: 'assistant', content: '' }
+      applyTurnResult(message, payload)
+      assistantMessages.value.push(message)
+    }
     await loadSessions()
   } catch (cause) {
     assistantMessages.value.push({

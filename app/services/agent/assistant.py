@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .llm import DeepSeekClient
 from .tools import ToolError, ToolRegistry
@@ -80,7 +80,25 @@ class Assistant:
                 cleaned.append({"role": role, "content": content.strip()})
         return cleaned
 
-    def chat(self, message: str, history: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+    def _stream_once(self, messages: list[dict[str, Any]],
+                     on_token: Callable[[str], None]) -> dict[str, Any]:
+        """消费一次流式响应：文本实时回调，返回组装好的完整 message（含 tool_calls）。"""
+        final: dict[str, Any] = {"role": "assistant", "content": ""}
+        for kind, payload in self.llm.chat_stream(messages, tools=self.registry.specs()):
+            if kind == "delta":
+                on_token(payload)
+            else:
+                final = payload
+        return final
+
+    def chat(self, message: str, history: Optional[list[dict[str, Any]]] = None,
+             on_token: Optional[Callable[[str], None]] = None) -> dict[str, Any]:
+        """跑一轮工具调用循环。
+
+        on_token 不为空时走流式：模型每吐一段文本就回调一次，
+        前端可以边生成边显示。注意工具调用轮次的 content 通常是空的，
+        所以「先流式输出又发现要调工具」在真实响应里不会出现。
+        """
         messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
         messages += self._prepare_history(history)
         messages.append({"role": "user", "content": message})
@@ -93,7 +111,8 @@ class Assistant:
         answer = ""
 
         for step in range(1, self.max_steps + 1):
-            reply = self.llm.chat(messages, tools=self.registry.specs())
+            reply = (self.llm.chat(messages, tools=self.registry.specs()) if on_token is None
+                     else self._stream_once(messages, on_token))
             tool_calls = reply.get("tool_calls") or []
             answer = (reply.get("content") or "").strip()
 

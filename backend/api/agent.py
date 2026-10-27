@@ -12,9 +12,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import asyncio
+import json
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 
@@ -127,12 +130,15 @@ def delete_session(session_id: int, user: User = Depends(current_user)) -> dict[
         return {"deleted": True, "session_id": session_id}
 
 
-@router.post("/{session_id}/messages")
-def send_message(session_id: int, request: TurnRequest,
-                 user: User = Depends(current_user)) -> dict[str, Any]:
+def _run_turn(session_id: int, message: str, user: User,
+              emit: Optional[Callable[[str, dict[str, Any]], None]] = None) -> dict[str, Any]:
+    """跑一轮对话：护栏 → 意图 → Agent → 落地校验 → 挂起。
+
+    emit 用于流式推送（meta / delta），事件在 worker 线程里产生，
+    调用方负责把它安全地送到事件循环。
+    """
     with SessionLocal() as db:
         conversation = _session_or_404(db, session_id, user)
-        message = request.message.strip()
         history = _history(db, conversation.id)
 
         db.add(AgentMessage(session_id=conversation.id, role="user", content=message))
@@ -152,11 +158,18 @@ def send_message(session_id: int, request: TurnRequest,
 
         # 2) 意图路由
         intent, intent_source = classify_intent(message, llm)
+        if emit is not None:
+            emit("meta", {"intent": intent, "intent_source": intent_source})
 
         # 3) 跑一轮 Agent
         assistant = Assistant(llm, build_registry(user))
+        def on_token(text: str) -> None:
+            if emit is not None:
+                emit("delta", {"text": text})
+
         try:
-            result = assistant.chat(message, history)
+            result = assistant.chat(message, history,
+                                    on_token=on_token if emit is not None else None)
         except LLMError as exc:
             raise HTTPException(503, str(exc)) from exc
 
@@ -191,6 +204,56 @@ def send_message(session_id: int, request: TurnRequest,
                 "numeric_unverified": grounding.get("numeric_unverified", []),
                 "steps": result.get("steps", 0),
                 "pending_action": pending_payload(conversation.pending_action) or None}
+
+
+@router.post("/{session_id}/messages")
+def send_message(session_id: int, request: TurnRequest,
+                 user: User = Depends(current_user)) -> dict[str, Any]:
+    return _run_turn(session_id, request.message.strip(), user)
+
+
+@router.post("/{session_id}/messages/stream")
+async def stream_message(session_id: int, request: TurnRequest,
+                         user: User = Depends(current_user)) -> StreamingResponse:
+    """流式版本：先推 meta（意图），再逐段推 delta（正文），最后推 done（完整结果）。
+
+    Agent 执行是同步阻塞的（urllib + 数据库），所以丢到线程里跑，
+    事件用 `call_soon_threadsafe` 送回事件循环，避免卡住整个 worker。
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Optional[tuple[str, dict[str, Any]]]] = asyncio.Queue()
+
+    def emit(event: str, data: dict[str, Any]) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, (event, data))
+
+    def worker() -> None:
+        try:
+            payload = _run_turn(session_id, request.message.strip(), user, emit=emit)
+            emit("done", payload)
+        except HTTPException as exc:
+            emit("error", {"detail": exc.detail, "status": exc.status_code})
+        except Exception as exc:                            # noqa: BLE001
+            emit("error", {"detail": str(exc)})
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    task = asyncio.create_task(asyncio.to_thread(worker))
+
+    async def generate():
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                event, data = item
+                yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        finally:
+            await task
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      # 让 Nginx 不要缓冲，否则流式会变成一次性吐出
+                                      "X-Accel-Buffering": "no"})
 
 
 @router.post("/{session_id}/confirm")

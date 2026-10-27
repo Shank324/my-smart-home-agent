@@ -158,3 +158,42 @@ def test_other_user_cannot_read_session(client, home_headers, other_home_headers
     session = client.post("/api/assistant/sessions", headers=home_headers, json={}).json()
     response = client.get(f"/api/assistant/sessions/{session['id']}", headers=other_home_headers)
     assert response.status_code in (403, 404)
+
+
+@pytest.fixture()
+def use_stream_llm(monkeypatch):
+    """替换成流式假模型：先吐几段文本，再给完整 message。"""
+    def _install(chunks: list[str], final: dict) -> None:
+        def fake_stream(messages, tools=None, **kwargs):        # noqa: ARG001
+            for text in chunks:
+                yield "delta", text
+            yield "final", final
+
+        monkeypatch.setattr(agent_module.llm, "chat_stream", fake_stream)
+        monkeypatch.setattr(type(agent_module.llm), "configured", property(lambda self: True))
+        monkeypatch.setattr(agent_module.llm, "model", "scripted", raising=False)
+    return _install
+
+
+def test_stream_endpoint_emits_sse(client, home_headers, use_stream_llm):
+    """流式接口要先推 meta 和 delta，最后推 done，且落库内容与 done 一致。"""
+    use_stream_llm(["灯", "一直", "闪一般是接触不良。"],
+                   {"role": "assistant", "content": "灯一直闪一般是接触不良。"})
+
+    session = client.post("/api/assistant/sessions", headers=home_headers, json={}).json()
+    with client.stream("POST", f"/api/assistant/sessions/{session['id']}/messages/stream",
+                       headers=home_headers, json={"message": "灯为什么一直闪"}) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        body = "".join(response.iter_text())
+
+    assert "event: meta" in body
+    assert "event: delta" in body
+    assert "event: done" in body
+    deltas = [json.loads(block.split("data: ", 1)[1])
+              for block in body.split("\n\n") if block.startswith("event: delta")]
+    assert "".join(item["text"] for item in deltas) == "灯一直闪一般是接触不良。"
+
+    detail = client.get(f"/api/assistant/sessions/{session['id']}", headers=home_headers).json()
+    assistant_messages = [item for item in detail["messages"] if item["role"] == "assistant"]
+    assert assistant_messages[-1]["content"] == "灯一直闪一般是接触不良。"

@@ -24,6 +24,7 @@ os.environ["KNOWLEDGE_STORE_PATH"] = str(STORE_FILE)
 os.environ["KNOWLEDGE_QUERY_REWRITE"] = "0"        # 改写需要 LLM，测试里关掉
 os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ["REDIS_URL"] = "redis://127.0.0.1:1/0"  # 故意指向不可用端口，验证降级
+os.environ["BCRYPT_ROUNDS"] = "4"                  # 测试里不需要 200ms 一次的强度
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

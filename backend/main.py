@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
@@ -50,10 +51,12 @@ from backend.security import (
     find_device,
     find_scene,
     home_for_user,
+    needs_rehash,
     now,
     password_hash,
     require_role,
     role_name,
+    verify_password,
 )
 from backend.seed import seed_database
 from backend.tokens import create_token, user_id_from_token
@@ -186,8 +189,11 @@ def apply_target_attributes(device: Device, attributes: dict[str, Any]) -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    seed_database()
-    ensure_db_objects()
+    # 生产用 SKIP_BOOTSTRAP=1：建表与种子由 `python -m backend.bootstrap` 单独跑一次，
+    # 避免 N 个 worker 同时启动时并发执行 DDL / 种子写入
+    if os.getenv("SKIP_BOOTSTRAP", "0") != "1":
+        seed_database()
+        ensure_db_objects()
     # Redis 可用就启用跨实例广播；不可用会退回单实例，不影响启动
     await realtime_start()
     try:
@@ -217,8 +223,12 @@ def health() -> dict[str, str]:
 def login(request: LoginRequest) -> dict[str, Any]:
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.username == request.username))
-        if user is None or user.password_hash != password_hash(request.password) or not user.active:
+        if user is None or not verify_password(request.password, user.password_hash) or not user.active:
             raise HTTPException(401, "invalid_credentials")
+        # 历史无盐 SHA-256 在用户下次登录时平滑升级成 bcrypt
+        if needs_rehash(user.password_hash):
+            user.password_hash = password_hash(request.password)
+            db.commit()
         token = create_token(user.id)
         return {"access_token": token, "token_type": "bearer",
                 "user": {"id": user.id, "username": user.username,

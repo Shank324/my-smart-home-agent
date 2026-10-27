@@ -51,8 +51,9 @@
 - 工单池浏览、接单（认领）、状态流转 `open → assigned → in_progress → resolved / cancelled`
 - 工单内实时聊天
 
-**AI 客服 Agent**（页面右下角悬浮入口 / `POST /api/assistant/sessions/{id}/messages`）
-- 7 个可调用工具：知识库检索、设备列表、设备状态、**能耗分析**、工单列表、创建工单、**场景设计**
+**AI 客服 Agent**（页面右下角悬浮入口 / `POST /api/assistant/sessions/{id}/messages`，另有 `/stream` 流式版）
+- 7 个可调用工具：知识库检索、设备列表、设备状态、**能耗分析**、工单列表、**报修草稿**、**场景设计**
+- **流式输出**：意图、正文逐段推送，首字延迟从「完整等 5 秒」变成约 1.4 秒
 - **会话持久化**：对话落库，刷新、换设备、重启都不丢；支持多会话切换
 - **意图路由**：咨询 / 报修 / 方案 / 控制四条流，规则优先、模型兜底
 - **可恢复中断**：Agent 提出方案后挂起，命令式确认后才落库。中断状态存数据库而非文件，
@@ -366,7 +367,29 @@ POST /api/scenes  ← 复用普通场景接口，草案变成真实场景
 数值之所以不进硬校验，是因为模型会把工具结果做除法取整
 （31.7 小时 ÷ 7 天 = 4.5 小时），这类派生值不是幻觉。
 
-### 13. 身份与广播：从「单进程能跑」到「多副本能跑」
+### 13. 流式输出：把「等 5 秒」变成「1.4 秒看到字」
+
+Agent 一轮对话要经历「检索 → 查设备 → 组织答案」，同步返回时用户只能盯着转圈。
+做法是把 SSE 和工具循环拼起来：
+
+```
+POST /messages/stream
+  event: meta   ← 意图一确定就先推，前端立刻显示标签
+  event: delta  ← 模型每吐一段文本推一次
+  event: done   ← 完整结果（含 proposal / work_order / 落库后的答案）
+```
+
+三个实现要点：
+
+| 问题 | 做法 |
+|---|---|
+| Agent 是同步阻塞的（urllib + 数据库） | 丢进线程跑，事件用 `call_soon_threadsafe` 送回事件循环，不卡 worker |
+| 模型会先输出「我先查一下」再调工具 | 前端收到 `done` 时**用服务端落库的答案覆盖**预览，保证看到的和查到的一致 |
+| Nginx 会缓冲响应导致「流式」退化成一次性吐出 | 响应头带 `X-Accel-Buffering: no` |
+
+实测：首字 1.4 秒（原来要等 5.5 秒拿全文），共 349 个 delta 事件。
+
+### 14. 身份与广播：从「单进程能跑」到「多副本能跑」
 
 最初 token 和 WebSocket 连接都是进程内字典，这带来两个硬限制：
 重启就把所有人踢下线；多 worker / 多实例时请求落到别的进程就 401、
@@ -376,6 +399,10 @@ POST /api/scenes  ← 复用普通场景接口，草案变成真实场景
 |---|---|---|
 | 身份跨进程一致 | **JWT（HS256）**，只用标准库实现 | 自包含、无状态；代价是无法主动吊销，只能靠短 TTL |
 | 事件跨实例分发 | **Redis Pub/Sub**：本实例 publish，各实例订阅后推给自己这边的连接 | 多一次序列化；Redis 挂了会降级成单实例广播，而不是让请求失败 |
+| 口令存储 | **bcrypt**（每用户独立盐，默认 12 轮） | 单次约 200ms，明显比 SHA-256 慢——这正是抵抗离线爆破的原因 |
+
+口令做了平滑迁移：库里的历史哈希是**无盐 SHA-256**，`verify_password` 同时接受两种格式，
+老用户登录成功后立刻用 bcrypt 重算并写回（`needs_rehash`），不需要停机迁移或强制改密。
 
 签名细节：签名对象是 `base64(header).base64(payload)`，用 HMAC-SHA256 算出后附在末尾；
 校验时重算并做**恒定时间比较**（`hmac.compare_digest`），避免通过响应时间猜签名。
@@ -434,7 +461,7 @@ docker compose exec api python scripts/check_broadcast.py --listener http://127.
 ### 代码质量
 
 ```
-pytest   86 个用例，覆盖率 76%
+pytest   90 个用例，覆盖率 74%
 ruff     E/F/W/I/B 规则全过
 CI       GitHub Actions：后端 lint + 测试 + 前端类型检查 + 生产构建
 ```
@@ -449,6 +476,30 @@ docker compose exec api python -m pytest --cov=backend --cov=app
 ```
 
 CI 跑同样的命令，环境用 SQLite + Hash embedding，不依赖 MySQL / Redis / 外部 API。
+
+### 性能（单机压测，仅代表量级）
+
+用 `scripts/loadtest.py`（线程池 + 固定并发）在本机压：Docker Desktop、MySQL 与 API 同机、
+API 单 worker。**客户端与被压服务共享 CPU，所以这组数字不能用来说明生产容量。**
+
+| 接口 | 并发 | QPS | P50 | P95 | P99 |
+|---|---|---|---|---|---|
+| `GET /api/health`（不碰数据库） | 20 | 886.5 | 21.7ms | 35.3ms | 41.8ms |
+| `GET /api/devices`（JWT + MySQL） | 20 | 130.2 | 151.2ms | 190.6ms | 207.0ms |
+| `GET /api/stats/overview`（视图 + 多表连接） | 10 | 73.2 | 133.0ms | 170.6ms | 190.8ms |
+| `POST /api/knowledge/search`（含 embedding 调用） | 4 | 14.8 | 263.6ms | 331.7ms | 348.7ms |
+
+**读这组数字要看出来的东西：**
+
+- 无数据库的接口能到 886 QPS，说明 Web 层本身不是瓶颈
+- 带鉴权的设备接口只有 130 QPS，且**并发从 20 加到 50 时 QPS 不变、P50 从 151ms 涨到 382ms**
+  ——典型的排队现象：瓶颈在数据库往返，不在连接数不足
+- 检索接口 15 QPS 几乎全部花在**同步调用 embedding 接口**（约 250ms），
+  本地 BM25 + 向量检索本身只有几毫秒
+
+**由此得出的优化优先级**：检索加缓存 > 合并鉴权查询 > 加 worker。
+（连接池已从默认的 5+10 调到 10+20 并加 `pool_recycle`，但对这个瓶颈没有帮助——
+这本身也是一个结论：**先定位瓶颈再调参**。）
 
 ---
 
@@ -533,6 +584,7 @@ py -m uvicorn backend.main:app --reload --port 8000
 | `GET` | `/api/assistant/sessions` | 会话列表 |
 | `GET` | `/api/assistant/sessions/{id}` | 会话详情（含全部消息） |
 | `POST` | `/api/assistant/sessions/{id}/messages` | 发消息：意图路由 + Agent + 护栏 |
+| `POST` | `/api/assistant/sessions/{id}/messages/stream` | **同上，SSE 流式返回（meta/delta/done）** |
 | `POST` | `/api/assistant/sessions/{id}/confirm` | **确认挂起动作（HITL 第二段）** |
 | `POST` | `/api/assistant/sessions/{id}/cancel` | 取消挂起动作 |
 | `DELETE` | `/api/assistant/sessions/{id}` | 删除会话 |
@@ -616,7 +668,7 @@ curl -s -X POST localhost:8000/api/assistant/sessions/$SID/confirm \
 │     ├─ retriever.py            混合检索 + 加权 RRF + 中文二元组分词
 │     ├─ rewrite.py              查询改写（**实现了但默认关闭**，消融是负收益）
 │     └─ schemas.py              Pydantic 数据契约
-├─ tests/                        pytest（86 个用例，覆盖率 76%）
+├─ tests/                        pytest（90 个用例，覆盖率 74%）
 │  ├─ conftest.py                SQLite + Hash embedding，不依赖外部服务
 │  ├─ test_auth.py               登录 / 注册 / 角色边界
 │  ├─ test_tenant_isolation.py   跨家庭越权
@@ -633,12 +685,16 @@ curl -s -X POST localhost:8000/api/assistant/sessions/$SID/confirm \
 │  ├─ tasks.json                 23 个 Agent 任务
 │  └─ run_task_eval.py           意图/工具/成功率/落地率
 ├─ scripts/
-│  ├─ seed_device_history.py     生成演示用设备历史
-│  └─ check_broadcast.py         **跨实例广播自检（两个 API 实例 + 同一 Redis）**
+│  ├─ deploy.sh                  **生产部署：构建 → bootstrap → 起容器 → 自检**
+│  ├─ loadtest.py                **压测：QPS 与 P50/P95/P99**
+│  ├─ check_broadcast.py         跨实例广播自检（两个 API 实例 + 同一 Redis）
+│  └─ seed_device_history.py     生成演示用设备历史
+├─ deploy/nginx.conf             静态托管 + 反代 /api 与 /ws
+├─ docker-compose.prod.yml       **生产编排（无源码挂载、API 2 worker、Nginx）**
 ├─ .github/workflows/ci.yml      lint + pytest + 前端构建
 ├─ ruff.toml / pytest.ini        工具配置
 ├─ seed_data/                    设备手册（知识源，8 篇约 1.25 万字）
-├─ docker-compose.yml
+├─ docker-compose.yml            本地开发编排
 └─ init_knowledge.py             离线索引脚本
 ```
 
@@ -668,30 +724,75 @@ curl -s -X POST localhost:8000/api/assistant/sessions/$SID/confirm \
 - [x] 检索通道配比消融（标题通道 / 查询改写 / 权重扫描，负收益方案已否决）
 - [x] **JWT 替换进程内 token，多 worker 与多实例共享身份**
 - [x] **Redis Pub/Sub 跨实例广播（已用双实例实测）**
-- [x] **pytest 86 用例 / 覆盖率 76% + GitHub Actions CI**
+- [x] **pytest 90 用例 / 覆盖率 74% + GitHub Actions CI**
+- [x] **SSE 流式输出（token 级，前端逐字渲染）**
+- [x] **密码升级 bcrypt，历史 SHA-256 登录时自动重算**
+- [x] **生产部署编排（Nginx + 2 worker + 独立 bootstrap）+ 同源构建**
+- [x] **压测脚本与 QPS/P95 数据（含瓶颈分析）**
 - [ ] Agent 建单后广播 WebSocket 事件
-- [ ] 流式输出（SSE）
 - [ ] 接单并发幂等（唯一索引 + 乐观锁）
-- [ ] 密码哈希升级（bcrypt / argon2）
-- [ ] 压测与容量数据（QPS / P95）
+- [ ] 查询向量缓存（检索 QPS 的主要瓶颈）
+
+---
+
+## 生产部署
+
+本地开发用 `docker-compose.yml`（挂源码、热更新、端口全开）；
+上线用 `docker-compose.prod.yml`，两者共用同一份镜像与 .env。
+
+```bash
+# 服务器上
+cp .env.example .env       # 填 JWT_SECRET / MYSQL_ROOT_PASSWORD / API Key
+chmod +x scripts/deploy.sh
+./scripts/deploy.sh
+```
+
+脚本按这个顺序做四件事，每一步都有原因：
+
+| 步骤 | 为什么必须单独做 |
+|---|---|
+| `npm ci && npm run build` | 构建产物用 `.env.production`，API 基址留空 = 同源 |
+| `docker compose run --rm api python -m backend.bootstrap` | 建表 + 种子 + 视图/触发器。**不能放在应用启动里**：2 个 worker 会并发执行 DDL |
+| `up -d --build api web` | API 以 `--workers=2` 启动（JWT + Redis 让多进程安全） |
+| `POST /api/knowledge/init` | 首次部署要把语料跑一遍 embedding |
+
+生产编排与开发编排的区别：
+
+| | 开发 | 生产 |
+|---|---|---|
+| 源码 | 挂载进容器，改完重启即可 | 打进镜像，改代码要重新构建 |
+| MySQL / Redis | 映射到宿主机端口（3308 / 6379） | **不暴露**，只能容器网络访问 |
+| worker | 1 | 2 |
+| 前端 | Vite dev server | Nginx 托管 `dist/` 并反代 `/api`、`/ws` |
+| 启动初始化 | lifespan 自动做 | `SKIP_BOOTSTRAP=1` + 独立 bootstrap |
+
+Nginx 侧两个关键配置：`/ws/` 必须放行 `Upgrade` 头，否则 WebSocket 握手降级；
+SSE 接口带 `X-Accel-Buffering: no`，否则流式会被反代缓冲成一次性吐出。
+
+> 部署完第一件事：改掉演示账号口令（`user1/home123`）或直接删掉，
+> 并把 `.env` 里的 `JWT_SECRET` 换成随机值。
 
 ---
 
 ## 已知限制
 
-- **密码仍是无盐 SHA-256**：身份层已换成 JWT，但口令存储还没换 bcrypt/argon2，这是当前最大的安全缺口
-- **还没有压测数据**：QPS / P95 / 连接数上限都没测过，只能说「架构上支持多实例」，不能说「扛得住多少」
+- **压测只在本机跑过**：客户端与被压服务共享 CPU，数字只代表量级；
+  没有多机压测、没有长时间稳定性测试，也没有连接数上限测试
 - WebSocket 的 JWT 仍放在 query string 里（浏览器 `WebSocket` 不能自定义 header），
   会进访问日志；生产应改成「先取一次性 ticket 再连接」
 - Redis 不可用时广播会**降级为单实例**（可用性优先），此时多副本之间的推送会漏
-- 前端 API 地址硬编码为 `localhost:8000`，尚未读取环境变量
+- 检索每次都要同步调一次 embedding 接口（约 250ms），没有做查询向量缓存——
+  这是检索 QPS 只有 15 的直接原因
+- 鉴权链路每个请求要查 2~3 次库（取用户 / 角色 / 家庭），是设备接口 P95 偏高的主因；
+  JWT 里其实已经可以带 role，换取一次查询
+- 没有限流：对话接口单次成本较高（一次问答可能多次调用大模型），被刷会直接烧钱
 - Agent 建单不会主动广播，维修端需刷新后才看到
 - 本地 Hash embedding 的检索质量明显弱于真实向量模型，仅用于离线跑通链路
 - 数据库视图与触发器仅 MySQL 生效；本地 SQLite 会自动跳过并降级为 ORM 查询
 - ORM 会话配置了 `expire_on_commit=False`，因此读不到触发器就地写入的字段，需重新查库
 - 设备参数存在 JSON 列里，**不能**用 SQL 直接按「温度 > 26」筛选；需要时应改为独立列或加生成列
 - 评测集规模有限（检索 50 条、任务 23 条），用于回归与量化，不代表线上分布
-- 单元测试 86 个用例覆盖 76%，但没覆盖真实 LLM 调用（用假模型驱动编排逻辑）
+- 单元测试 90 个用例覆盖 74%，但没覆盖真实 LLM 调用（用假模型驱动编排逻辑）
 - 设备历史只统计有记录的时间段；新部署时历史为空，可用 `scripts/seed_device_history.py` 生成演示数据
 - 能耗按「额定功率 × 通电时长」估算，没有考虑变频与待机功耗，属于区间估计
 - 向量索引是**独立存储**（json 文件或 Qdrant），不放在 MySQL 里：MySQL 8 没有原生向量类型与 ANN 索引。

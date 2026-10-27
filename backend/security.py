@@ -13,9 +13,12 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
+import bcrypt
 from fastapi import Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,14 +27,39 @@ from backend.db import SessionLocal
 from backend.models import Device, Member, Role, Scene, User, user_roles
 from backend.tokens import user_id_from_token
 
+_BCRYPT_PREFIXES = ("$2a$", "$2b$", "$2y$")
+
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def password_hash(password: str) -> str:
-    """演示实现：无盐 SHA-256。生产必须换成 bcrypt/argon2。"""
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    """bcrypt + 每个用户独立随机盐。
+
+    轮数默认 12（约 200ms/次），太重会拖慢登录，太轻扛不住离线爆破；
+    测试里用 BCRYPT_ROUNDS=4 把 4 秒的种子时间压到几十毫秒。
+    """
+    rounds = max(4, int(os.getenv("BCRYPT_ROUNDS", "12")))
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds)).decode("ascii")
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """同时兼容 bcrypt 和历史无盐 SHA-256，便于平滑升级。"""
+    if not stored:
+        return False
+    if stored.startswith(_BCRYPT_PREFIXES):
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), stored.encode("ascii"))
+        except ValueError:
+            return False
+    legacy = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(legacy, stored)
+
+
+def needs_rehash(stored: str) -> bool:
+    """旧格式（或轮数过低）的哈希应该在下次登录时重算。"""
+    return not (stored or "").startswith(_BCRYPT_PREFIXES)
 
 
 def current_user(authorization: Optional[str] = Header(default=None)) -> User:

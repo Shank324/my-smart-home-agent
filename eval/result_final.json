@@ -1,6 +1,6 @@
 {
   "summary": {
-    "label": "final",
+    "label": "final-post-bcrypt",
     "top_k": 5,
     "questions": 50,
     "recall_at_1": 0.88,
