@@ -33,6 +33,11 @@ def init_knowledge() -> dict[str, int]:
 
 @router.get("/status", response_model=KnowledgeStatus)
 def knowledge_status() -> KnowledgeStatus:
+    # 允许「懒加载」：磁盘上有可用向量就直接读回，不重新 embedding
+    try:
+        retriever.ensure_ready()
+    except (EmbeddingError, VectorStoreError, KnowledgeLoadError, OSError):
+        pass
     return KnowledgeStatus(
         ready=bool(retriever.chunks), documents=len(retriever.documents()),
         chunks=len(retriever.chunks), vector_backend=retriever.store.backend)

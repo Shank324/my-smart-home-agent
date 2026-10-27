@@ -19,6 +19,7 @@ class QdrantVectorStore:
     def __init__(self, fallback_path: Optional[Path] = None) -> None:
         self.fallback_path = fallback_path or Path(os.getenv("KNOWLEDGE_STORE_PATH", ".data/knowledge.json"))
         self._items: list[tuple[TextChunk, list[float]]] = []
+        self._fingerprint: Optional[str] = None
         self._client: Any = None
         try:
             if os.getenv("KNOWLEDGE_VECTOR_BACKEND", "json").lower() != "qdrant":
@@ -49,7 +50,8 @@ class QdrantVectorStore:
         except Exception as exc:
             raise VectorStoreError("cannot initialize Qdrant collection device_knowledge") from exc
 
-    def replace(self, items: list[tuple[TextChunk, list[float]]]) -> None:
+    def replace(self, items: list[tuple[TextChunk, list[float]]],
+                fingerprint: Optional[str] = None) -> None:
         self._items = items
         if self._client:
             points = [self._models.PointStruct(id=i, vector=vector, payload=chunk.model_dump())
@@ -63,7 +65,37 @@ class QdrantVectorStore:
         else:
             self.fallback_path.parent.mkdir(parents=True, exist_ok=True)
             self.fallback_path.write_text(json.dumps(
-                [{"chunk": c.model_dump(), "vector": v} for c, v in items], ensure_ascii=False), encoding="utf-8")
+                {"fingerprint": fingerprint,
+                 "items": [{"chunk": c.model_dump(), "vector": v} for c, v in items]},
+                ensure_ascii=False), encoding="utf-8")
+
+    def load(self) -> tuple[list[TextChunk], Optional[str]]:
+        """从本地文件读回已算好的向量，避免每次重启都重新调 embedding。
+
+        返回 (chunks, fingerprint)。文件不存在或损坏时返回 ([], None)。
+        """
+        if self._client:
+            return [], None
+        if self._items:
+            return [chunk for chunk, _ in self._items], self._fingerprint
+        if not self.fallback_path.exists():
+            return [], None
+        try:
+            raw = json.loads(self.fallback_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return [], None
+        # 兼容早期只写数组的格式
+        if isinstance(raw, list):
+            items, fingerprint = raw, None
+        else:
+            items, fingerprint = raw.get("items") or [], raw.get("fingerprint")
+        try:
+            loaded = [(TextChunk.model_validate(item["chunk"]), item["vector"]) for item in items]
+        except (KeyError, TypeError, ValueError):
+            return [], None
+        self._items = loaded
+        self._fingerprint = fingerprint
+        return [chunk for chunk, _ in loaded], fingerprint
 
     def search(self, vector: list[float], top_k: int, filter_conditions: Optional[dict[str, Any]] = None) -> list[RetrievalResult]:
         if self._client:

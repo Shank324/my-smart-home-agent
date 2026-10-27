@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import math
@@ -22,6 +23,14 @@ class KnowledgeRetriever:
         self.documents_meta: list[DocumentMeta] = []
         self._tokens: list[list[str]] = []
 
+    def fingerprint(self) -> str:
+        """语料指纹：文件内容变了就要重建索引，否则复用磁盘上的向量。"""
+        digest = hashlib.sha256()
+        for path in sorted(self.data_dir.rglob("*.md")):
+            digest.update(path.name.encode("utf-8"))
+            digest.update(path.read_bytes())
+        return digest.hexdigest()[:16]
+
     def rebuild(self) -> int:
         items = []
         self.documents_meta = []
@@ -32,9 +41,25 @@ class KnowledgeRetriever:
         vectors = self.embedder.embed_texts([chunk.content for chunk in self.chunks], batch_size=16)
         for chunk, vector in zip(self.chunks, vectors):
             items.append((chunk, vector))
-        self.store.replace(items)
+        self.store.replace(items, fingerprint=self.fingerprint())
         self._tokens = [self._tokenize(chunk.content) for chunk in self.chunks]
         return len(self.chunks)
+
+    def ensure_ready(self) -> None:
+        """冷启动：优先复用磁盘上的向量，只有语料变了才重新 embedding。
+
+        早期写法是「没有 chunk 就 rebuild」，等于每次容器重建都要把所有语料
+        重新过一次 embedding 接口——既慢又费钱。
+        """
+        if self.chunks:
+            return
+        current = self.fingerprint()
+        chunks, stored = self.store.load()
+        if chunks and stored == current:
+            self.chunks = chunks
+            self._tokens = [self._tokenize(chunk.content) for chunk in chunks]
+            return
+        self.rebuild()
 
     # 中文虚词：在「字 + 二元组」切分下会高频命中无关块，必须过滤
     _STOPWORDS = set(
@@ -90,8 +115,7 @@ class KnowledgeRetriever:
         return dict(sorted(scores.items(), key=lambda item: item[1], reverse=True)[:top_k])
 
     def search(self, query: str, top_k: int = 5, device_model: Optional[str] = None) -> list[RetrievalResult]:
-        if not self.chunks:
-            self.rebuild()
+        self.ensure_ready()
         # 没有语义能力的 embedding（如 HashEmbedder）不参与融合：
         # 它的排序接近随机，等权融进 RRF 会把 BM25 的正确结果挤下去
         semantic = getattr(self.embedder, "is_semantic", True)
