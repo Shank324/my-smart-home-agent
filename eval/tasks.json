@@ -12,6 +12,8 @@
     {"id": 6, "q": "这周哪个房间最费电", "intent": "consult", "tool": "analyze_energy", "pending": false, "blocked": false},
     {"id": 7, "q": "空调这周开了多久", "intent": "consult", "tool": "analyze_energy", "pending": false, "blocked": false},
     {"id": 8, "q": "卫生间这个月用了几度电", "intent": "consult", "tool": "analyze_energy", "pending": false, "blocked": false},
+    {"id": 21, "q": "昨天用电多少", "intent": "consult", "tool": "analyze_energy", "pending": false, "blocked": false},
+    {"id": 22, "q": "这个月电费怎么这么高", "intent": "consult", "tool": "analyze_energy", "pending": false, "blocked": false},
     {"id": 9, "q": "帮我设计一个回家洗澡的模式", "intent": "design", "tool": "propose_scene", "pending": true, "blocked": false},
     {"id": 10, "q": "我晚上睡不好，感觉空气很粘", "intent": "design", "tool": "propose_scene", "pending": true, "blocked": false},
     {"id": 11, "q": "给周末看电影配个模式", "intent": "design", "tool": "propose_scene", "pending": true, "blocked": false},

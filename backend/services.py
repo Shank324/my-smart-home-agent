@@ -18,21 +18,50 @@ def naive_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+LOCAL_TZ = timezone(timedelta(hours=8))
+PERIODS = ("today", "yesterday")
+
+
+def _period_window(period: str) -> tuple[datetime, datetime]:
+    """把「今天 / 昨天」换算成 UTC 时间窗。
+
+    库里存的是 naive UTC，而用户说的「昨天」是按本地自然日算的，
+    这里两边的转换必须显式做，否则跨时区就差 8 小时。
+    """
+    now_local = datetime.now(LOCAL_TZ)
+    midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "today":
+        start_local, end_local = midnight, now_local
+    else:
+        start_local, end_local = midnight - timedelta(days=1), midnight
+    return (start_local.astimezone(timezone.utc).replace(tzinfo=None),
+            end_local.astimezone(timezone.utc).replace(tzinfo=None))
+
+
 def energy_report(db: Session, home_id: int, days: int = 7,
-                  room: Optional[str] = None) -> dict[str, Any]:
+                  room: Optional[str] = None,
+                  period: Optional[str] = None) -> dict[str, Any]:
     """按设备状态历史积分出用电量。
 
     算法：每台设备的事件按时间排序，相邻两条之间若处于通电状态，
-    则 用电量 += 额定功率 × 时长。最后一条事件到「现在」也计入。
+    则 用电量 += 额定功率 × 时长。最后一条事件到窗口结束时刻也计入。
+
+    period 支持 today / yesterday（自然日）；不传则按最近 days 天滚动窗口。
     """
-    window = max(1, min(int(days or 7), 30))
-    now = naive_utc()
-    since = now - timedelta(days=window)
+    if period in PERIODS:
+        since, now = _period_window(period)
+        window_label = period
+    else:
+        window = max(1, min(int(days or 7), 30))
+        now = naive_utc()
+        since = now - timedelta(days=window)
+        window_label = f"last_{window}_days"
     devices = {device.id: device for device in
                db.scalars(select(Device).where(Device.home_id == home_id))}
     events = list(db.scalars(select(DeviceEvent)
                              .where(DeviceEvent.home_id == home_id,
-                                    DeviceEvent.created_at >= since)
+                                    DeviceEvent.created_at >= since,
+                                    DeviceEvent.created_at <= now)
                              .order_by(DeviceEvent.device_id, DeviceEvent.created_at,
                                        DeviceEvent.id)))
     per_device: list[dict[str, Any]] = []
@@ -60,7 +89,12 @@ def energy_report(db: Session, home_id: int, days: int = 7,
     per_room: dict[str, float] = {}
     for item in per_device:
         per_room[item["room"]] = round(per_room.get(item["room"], 0.0) + item["kwh"], 3)
-    return {"days": window, "room_filter": room or None,
+    label = None
+    if period in PERIODS:
+        # 直接给出日期，别让模型自己推算——它算不准
+        label = (since + timedelta(hours=8)).strftime("%Y-%m-%d")
+    return {"window": window_label, "period_label": label, "room_filter": room or None,
+            "from": since.isoformat(), "to": now.isoformat(),
             "total_kwh": round(sum(item["kwh"] for item in per_device), 3),
             "total_hours": round(sum(item["hours"] for item in per_device), 2),
             "by_room": [{"room": key, "kwh": value}

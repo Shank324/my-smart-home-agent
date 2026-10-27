@@ -242,19 +242,24 @@ def build_registry(user: User) -> ToolRegistry:
 
     @registry.register(
         "analyze_energy",
-        "统计最近 N 天各设备与各房间的用电量和运行时长（数据来自设备状态历史）。"
-        "用户问「电费为什么高」「空调开了多久」「哪个房间最费电」时必须调用。",
+        "统计家庭用电量与设备运行时长（数据来自设备状态历史）。"
+        "用户问「电费为什么高」「昨天用电多少」「空调开了多久」「哪个房间最费电」时必须调用。"
+        "「今天/昨天」用 period 参数，其它情况用 days。",
         {"type": "object",
          "properties": {
-             "days": {"type": "integer", "description": "统计天数，默认 7，范围 1-30"},
+             "period": {"type": "string", "enum": ["today", "yesterday"],
+                        "description": "按自然日统计：今天或昨天。用户说「昨天」时必须用这个"},
+             "days": {"type": "integer", "description": "最近 N 天，默认 7，范围 1-30"},
              "room": {"type": "string", "description": "只统计某个房间，如 客厅；留空表示全屋"},
          }})
-    def analyze_energy(days: int = 7, room: str = "") -> dict[str, Any]:
+    def analyze_energy(period: str = "", days: int = 7, room: str = "") -> dict[str, Any]:
         with SessionLocal() as db:
             home_id = home_for_user(db, user)
-            report = energy_report(db, home_id, days=days, room=room or None)
+            report = energy_report(db, home_id, days=days, room=room or None,
+                                   period=period or None)
+        report["note"] = "回答时日期请直接使用 period_label（如果非空），不要自己推算"
         if not report["has_history"]:
-            report["hint"] = "这段时间没有设备状态变化记录，无法统计；需要设备被开关过才有数据"
+            report["hint"] = "这个时间窗内没有设备状态变化记录，无法统计；需要设备被开关过才有数据"
         return report
 
     @registry.register(

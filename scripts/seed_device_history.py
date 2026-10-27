@@ -52,7 +52,7 @@ def build_events(device: Device, days: int, now_local: datetime) -> list[DeviceE
     slots = SCHEDULE.get(device.type, [])
     if not slots:
         return events
-    for offset in range(days, 0, -1):
+    for offset in range(days, -1, -1):          # 含今天（offset=0）
         day = now_local - timedelta(days=offset)
         for start, end in slots:
             # 加一点随机抖动，避免每天完全一样
@@ -65,16 +65,21 @@ def build_events(device: Device, days: int, now_local: datetime) -> list[DeviceE
                     attributes=device.attributes,
                     created_at=local_to_utc_naive(day, 0.0)))
                 continue
+            on_at = local_to_utc_naive(day, max(start_jitter, 0))
+            off_at = local_to_utc_naive(day, min(end_jitter, 23.98))
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            # 今天的时间窗可能还没到，未来的事件不能写
+            if on_at > now_utc:
+                continue
             events.append(DeviceEvent(
                 device_id=device.id, home_id=device.home_id, powered=True,
                 value=device.value, power_w=device.power_consumption,
-                attributes=device.attributes,
-                created_at=local_to_utc_naive(day, max(start_jitter, 0))))
-            events.append(DeviceEvent(
-                device_id=device.id, home_id=device.home_id, powered=False,
-                value=device.value, power_w=device.power_consumption,
-                attributes=device.attributes,
-                created_at=local_to_utc_naive(day, min(end_jitter, 23.98))))
+                attributes=device.attributes, created_at=on_at))
+            if off_at <= now_utc:
+                events.append(DeviceEvent(
+                    device_id=device.id, home_id=device.home_id, powered=False,
+                    value=device.value, power_w=device.power_consumption,
+                    attributes=device.attributes, created_at=off_at))
     return events
 
 

@@ -114,15 +114,15 @@ def overview(user: User = Depends(current_user)) -> dict[str, Any]:
 
 
 @router.get("/energy")
-def energy(days: int = 7, room: Optional[str] = None,
+def energy(days: int = 7, room: Optional[str] = None, period: Optional[str] = None,
            user: User = Depends(current_user)) -> dict[str, Any]:
-    """按设备状态历史积分出用电量，支持按房间过滤。
+    """按设备状态历史积分出用电量，支持按房间过滤与自然日窗口。
 
     数据来源是触发器写入的 device_events，所以只统计「有历史记录」的时间段。
     """
     require_role(user, {"home_user"})
     with SessionLocal() as db:
-        return energy_report(db, home_for_user(db, user), days=days, room=room)
+        return energy_report(db, home_for_user(db, user), days=days, room=room, period=period)
 
 
 @router.get("/devices/{device_id}/history")
