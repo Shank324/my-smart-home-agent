@@ -66,6 +66,11 @@ def main() -> int:
         sid = session["id"]
         _, reply = call(f"/api/assistant/sessions/{sid}/messages", {"message": task["q"]},
                         token, "POST")
+        if not isinstance(reply, dict):
+            # 服务端 5xx 时 body 是字符串，不能让整个评测脚本崩掉
+            rows.append({"id": task["id"], "q": task["q"], "ok": False,
+                         "error": str(reply)[:160]})
+            continue
         used = tools_used(sid, token)
 
         expect_intent = task.get("intent")

@@ -1,0 +1,12 @@
+# ruff 配置：显式声明规则集，避免不同机器上 ruff 版本不同导致结论不一致
+line-length = 110
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I", "B"]
+# B008：FastAPI 的 Depends()/Header() 就要写在默认值里，这条规则在该框架下不适用
+ignore = ["B008"]
+
+[lint.per-file-ignores]
+# 测试里为了可读性允许未使用的参数
+"tests/*" = ["ARG001"]

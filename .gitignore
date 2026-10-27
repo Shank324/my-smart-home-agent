@@ -14,8 +14,15 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.ruff_cache/
 .coverage
+coverage.xml
 htmlcov/
+
+# 测试运行期产物（pytest 用独立 SQLite + 哈希索引）
+.test_smarthome.db
+.test_smarthome.db-*
+.test_knowledge.json
 
 # 运行期数据
 .data/

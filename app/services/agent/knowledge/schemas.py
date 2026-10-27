@@ -52,11 +52,13 @@ class RetrievalResult(BaseModel):
     section: str = ""
     vector_score: Optional[float] = None
     keyword_score: Optional[float] = None
+    title_score: Optional[float] = None
 
     @property
     def chunk(self) -> TextChunk:
+        sections = [self.section] if self.section else []
         return TextChunk(chunk_id="", doc_id=self.source_doc, content=self.content,
-                         metadata={"filename": self.source_doc, "section_path": [self.section] if self.section else []})
+                         metadata={"filename": self.source_doc, "section_path": sections})
 
 
 class KnowledgeSearchRequest(BaseModel):

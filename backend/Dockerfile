@@ -18,6 +18,11 @@ WORKDIR /app
 COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir -i "$PIP_INDEX_URL" -r backend/requirements.txt
 
+# 测试依赖也装进镜像，这样 `docker compose exec api python -m pytest` 开箱可用；
+# 生产部署想瘦身可以把这一段去掉，CI 里单独装 requirements-dev.txt 即可
+COPY backend/requirements-dev.txt ./backend/requirements-dev.txt
+RUN pip install --no-cache-dir -i "$PIP_INDEX_URL" -r backend/requirements-dev.txt
+
 # 再拷代码：backend 包、app 包（知识库）、种子文档
 COPY backend ./backend
 COPY app ./app

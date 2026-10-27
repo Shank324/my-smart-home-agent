@@ -3,19 +3,31 @@
     "label": "final",
     "top_k": 5,
     "questions": 50,
-    "recall_at_1": 0.86,
-    "recall_at_k": 0.98,
-    "mrr": 0.9057,
-    "misses": 1
+    "recall_at_1": 0.88,
+    "recall_at_k": 0.96,
+    "mrr": 0.9107,
+    "misses": 2
   },
   "misses": [
+    {
+      "id": 5,
+      "q": "空调不制冷但面板显示正常",
+      "got": [
+        "ac_2000.md#无法启动的排查顺序",
+        "faq.md#空调显示 E1 怎么办",
+        "faq.md#空调显示 E9 是坏了吗"
+      ],
+      "want": [
+        "ac_2000.md#制冷或制热效果差的排查"
+      ]
+    },
     {
       "id": 33,
       "q": "点了开关但是设备没反应",
       "got": [
         "troubleshooting.md#设备显示离线",
-        "faq.md#设备一直显示离线",
-        "ac_2000.md#无法启动的排查顺序"
+        "ac_2000.md#无法启动的排查顺序",
+        "faq.md#设备一直显示离线"
       ],
       "want": [
         "troubleshooting.md#指令下发无响应"

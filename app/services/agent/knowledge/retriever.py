@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
-import math
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .embedder import create_embedder
 from .loader import load_directory
@@ -15,20 +15,31 @@ from .vector_store import QdrantVectorStore
 
 
 class KnowledgeRetriever:
-    def __init__(self, data_dir: Optional[Path] = None, store_path: Optional[Path] = None) -> None:
+    def __init__(self, data_dir: Optional[Path] = None, store_path: Optional[Path] = None,
+                 rewriter: Optional[Any] = None) -> None:
         self.data_dir = data_dir or Path(os.getenv("KNOWLEDGE_DATA_DIR", "seed_data"))
         self.store = QdrantVectorStore(store_path)
         self.embedder = create_embedder()
+        self.rewriter = rewriter
         self.chunks = []
         self.documents_meta: list[DocumentMeta] = []
         self._tokens: list[list[str]] = []
+        self._by_id: dict[str, Any] = {}
+        self._by_content: dict[str, Any] = {}
 
     def fingerprint(self) -> str:
-        """语料指纹：文件内容变了就要重建索引，否则复用磁盘上的向量。"""
+        """索引指纹：语料内容 + embedding 模型标识。
+
+        只算语料是不够的——换 embedding 模型（或维度）后语料没变，
+        但旧向量已经和新查询不在同一个空间，必须重建。
+        这个坑真实踩过：切到 hash 兜底跑了一轮，切回来时指纹没变，
+        于是把 hash 向量当成真模型向量用了。
+        """
         digest = hashlib.sha256()
         for path in sorted(self.data_dir.rglob("*.md")):
             digest.update(path.name.encode("utf-8"))
             digest.update(path.read_bytes())
+        digest.update(getattr(self.embedder, "signature", "unknown").encode("utf-8"))
         return digest.hexdigest()[:16]
 
     def rebuild(self) -> int:
@@ -39,11 +50,16 @@ class KnowledgeRetriever:
             self.documents_meta.append(document)
             self.chunks.extend(split_document(document, content))
         vectors = self.embedder.embed_texts([chunk.content for chunk in self.chunks], batch_size=16)
-        for chunk, vector in zip(self.chunks, vectors):
+        for chunk, vector in zip(self.chunks, vectors, strict=True):
             items.append((chunk, vector))
         self.store.replace(items, fingerprint=self.fingerprint())
-        self._tokens = [self._tokenize(chunk.content) for chunk in self.chunks]
+        self._index_tokens()
         return len(self.chunks)
+
+    def _index_tokens(self) -> None:
+        self._tokens = [self._tokenize(chunk.content) for chunk in self.chunks]
+        self._by_id = {chunk.chunk_id: chunk for chunk in self.chunks}
+        self._by_content = {chunk.content: chunk for chunk in self.chunks}
 
     def ensure_ready(self) -> None:
         """冷启动：优先复用磁盘上的向量，只有语料变了才重新 embedding。
@@ -57,7 +73,7 @@ class KnowledgeRetriever:
         chunks, stored = self.store.load()
         if chunks and stored == current:
             self.chunks = chunks
-            self._tokens = [self._tokenize(chunk.content) for chunk in chunks]
+            self._index_tokens()
             return
         self.rebuild()
 
@@ -84,22 +100,26 @@ class KnowledgeRetriever:
         return [token for token in tokens if token not in cls._STOPWORDS]
 
     def _bm25(self, query: str, top_k: int) -> dict[str, float]:
-        query_tokens = set(self._tokenize(query))
-        if not query_tokens or not self._tokens:
+        return self._bm25_over(self._tokenize(query), self._tokens, top_k)
+
+    def _bm25_over(self, query_tokens: list[str], corpus: list[list[str]],
+                   top_k: int) -> dict[str, float]:
+        """Okapi BM25。corpus 可以是正文词表，也可以是标题词表（字段加权）。"""
+        unique = set(query_tokens)
+        if not unique or not corpus:
             return {}
-        average_length = sum(len(tokens) for tokens in self._tokens) / len(self._tokens)
-        # 先算文档频率，避免在块循环里重复扫描全部块
+        average_length = sum(len(tokens) for tokens in corpus) / len(corpus)
         document_frequency: dict[str, int] = {}
-        for tokens in self._tokens:
-            for token in query_tokens:
+        for tokens in corpus:
+            for token in unique:
                 if token in tokens:
                     document_frequency[token] = document_frequency.get(token, 0) + 1
         scores: dict[str, float] = {}
-        document_count = len(self._tokens)
-        for chunk, tokens in zip(self.chunks, self._tokens):
+        document_count = len(corpus)
+        for chunk, tokens in zip(self.chunks, corpus, strict=True):
             length = len(tokens) or 1
             score = 0.0
-            for token in query_tokens:
+            for token in unique:
                 frequency = tokens.count(token)
                 if not frequency:
                     continue
@@ -114,31 +134,61 @@ class KnowledgeRetriever:
                 scores[chunk.chunk_id] = score
         return dict(sorted(scores.items(), key=lambda item: item[1], reverse=True)[:top_k])
 
-    def search(self, query: str, top_k: int = 5, device_model: Optional[str] = None) -> list[RetrievalResult]:
-        self.ensure_ready()
-        # 没有语义能力的 embedding（如 HashEmbedder）不参与融合：
-        # 它的排序接近随机，等权融进 RRF 会把 BM25 的正确结果挤下去
+    def _hybrid_once(self, query: str, depth: int,
+                     device_model: Optional[str]) -> dict[str, float]:
+        """单条查询的混合召回：向量 + BM25，用加权 RRF 融合。
+
+        权重做成环境变量是为了做消融实验：改一下重启就能对比不同配比，
+        不用改代码，也不会让「调参」这件事变成拍脑袋。
+        """
         semantic = getattr(self.embedder, "is_semantic", True)
-        vector_results = (self.store.search(self.embedder.embed_query(query), max(top_k * 3, top_k),
+        vector_results = (self.store.search(self.embedder.embed_query(query), depth,
                                             {"device_model": device_model} if device_model else None)
                           if semantic else [])
-        keyword = self._bm25(query, max(top_k * 3, top_k))
-        combined: dict[str, RetrievalResult] = {}
+        body = self._bm25_over(self._tokenize(query), self._tokens, depth)
+        vector_weight = float(os.getenv("KNOWLEDGE_VECTOR_WEIGHT", "1.0"))
+        bm25_weight = float(os.getenv("KNOWLEDGE_BM25_WEIGHT", "1.0"))
+        scores: dict[str, float] = {}
         for rank, result in enumerate(vector_results, 1):
-            combined[result.content] = result.model_copy(
-                update={"score": 1 / (60 + rank)})
-        for rank, chunk_id in enumerate(keyword, 1):
-            chunk = next(chunk for chunk in self.chunks if chunk.chunk_id == chunk_id)
-            key = chunk.content
-            item = combined.get(key)
-            if item:
-                item.score += 1 / (60 + rank)
-                item.keyword_score = keyword[chunk_id]
-            else:
-                combined[key] = RetrievalResult(content=chunk.content, source_doc=chunk.source,
-                    section=" > ".join(chunk.section_path), score=1 / (60 + rank),
-                    keyword_score=keyword[chunk_id])
-        return sorted(combined.values(), key=lambda item: item.score, reverse=True)[:top_k]
+            chunk = self._by_content.get(result.content)
+            if chunk is None:
+                continue
+            scores[chunk.chunk_id] = scores.get(chunk.chunk_id, 0.0) + vector_weight / (60 + rank)
+        for rank, chunk_id in enumerate(body, 1):
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + bm25_weight / (60 + rank)
+        return scores
+
+    def search(self, query: str, top_k: int = 5, device_model: Optional[str] = None,
+               expand: bool = True) -> list[RetrievalResult]:
+        """两层融合：先做单查询内的「向量 + BM25」，再做跨改写版本的 RRF。
+
+        跨版本融合时原句权重 1.0、改写句 0.5——改写只是补充召回视角，
+        不应该压过用户原话。
+        """
+        self.ensure_ready()
+        depth = max(int(top_k * float(os.getenv("KNOWLEDGE_CANDIDATE_DEPTH", "3"))), top_k)
+        queries: list[tuple[str, float]] = [(query, 1.0)]
+        if expand and self.rewriter is not None:
+            queries += [(variant, 0.5) for variant in self.rewriter.expand(query)]
+
+        fused: dict[str, float] = {}
+        keyword_hits: dict[str, float] = {}
+        for text, weight in queries:
+            ranked = self._hybrid_once(text, depth, device_model)
+            for rank, (chunk_id, score) in enumerate(
+                    sorted(ranked.items(), key=lambda kv: kv[1], reverse=True), 1):
+                fused[chunk_id] = fused.get(chunk_id, 0.0) + weight / (60 + rank)
+                if weight == 1.0:
+                    keyword_hits[chunk_id] = score
+
+        results: list[RetrievalResult] = []
+        for chunk_id in sorted(fused, key=lambda cid: fused[cid], reverse=True)[:top_k]:
+            chunk = self._by_id[chunk_id]
+            results.append(RetrievalResult(
+                content=chunk.content, source_doc=chunk.source,
+                section=" > ".join(chunk.section_path), score=fused[chunk_id],
+                keyword_score=keyword_hits.get(chunk_id)))
+        return results
 
     def documents(self) -> list[DocumentMeta]:
         if not self.documents_meta and self.data_dir.exists():

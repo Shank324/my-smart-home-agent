@@ -17,8 +17,7 @@ from sqlalchemy.orm import Session, aliased
 
 from backend.db import SessionLocal, engine
 from backend.models import Device, DeviceEvent, Home, Scene, SceneAction, User, WorkOrder
-from backend.security import (current_user, find_device, home_for_user, require_role,
-                              role_name)
+from backend.security import current_user, find_device, home_for_user, require_role, role_name
 from backend.services import energy_report, naive_utc
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])

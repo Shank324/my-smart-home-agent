@@ -140,7 +140,8 @@ def build_registry(user: User) -> ToolRegistry:
                  "items": {
                      "type": "object",
                      "properties": {
-                         "device": {"type": "string", "description": "设备名称，必须来自 list_devices 的返回"},
+                         "device": {"type": "string",
+                                    "description": "设备名称，必须来自 list_devices 的返回"},
                          "action": {"type": "string", "enum": ["on", "off"]},
                          "attributes": {
                              "type": "object",

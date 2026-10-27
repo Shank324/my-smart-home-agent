@@ -25,8 +25,7 @@ from backend.api.assistant import build_registry, llm
 from backend.db import SessionLocal
 from backend.models import AgentMessage, AgentSession, Device, User
 from backend.security import current_user, home_for_user, role_name
-from backend.services import (create_scene_from_actions, create_work_order_from_proposal,
-                              pending_payload)
+from backend.services import create_scene_from_actions, create_work_order_from_proposal, pending_payload
 
 router = APIRouter(prefix="/api/assistant/sessions", tags=["agent"])
 

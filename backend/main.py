@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
@@ -28,16 +27,36 @@ from backend.api.stats import router as stats_router
 from backend.db import SessionLocal, engine
 from backend.db_objects import ensure_db_objects
 from backend.device_types import catalog_payload, derive_status, normalize_attributes
-from backend.models import (Device, Home, Member, Role, Scene, User, WorkOrder,
-                            WorkOrderEvent, WorkOrderMessage, user_roles)
+from backend.models import (
+    Device,
+    Home,
+    Member,
+    Role,
+    Scene,
+    User,
+    WorkOrder,
+    WorkOrderEvent,
+    WorkOrderMessage,
+    user_roles,
+)
+
 # 与请求体里的 Pydantic SceneAction 区分，避免同名覆盖
 from backend.models import SceneAction as SceneActionRow
-from backend.security import (TOKENS, current_user, find_device, find_scene,
-                              home_for_user, now, password_hash, require_role,
-                              role_name)
+from backend.realtime import CLIENTS, broadcast
+from backend.realtime import start as realtime_start
+from backend.realtime import stop as realtime_stop
+from backend.security import (
+    current_user,
+    find_device,
+    find_scene,
+    home_for_user,
+    now,
+    password_hash,
+    require_role,
+    role_name,
+)
 from backend.seed import seed_database
-
-CLIENTS: dict[WebSocket, int] = {}
+from backend.tokens import create_token, user_id_from_token
 
 
 # --------------------------------------------------------------------------- #
@@ -165,27 +184,16 @@ def apply_target_attributes(device: Device, attributes: dict[str, Any]) -> None:
         device.value = derived
 
 
-async def broadcast(event: str, payload: object, home_id: int) -> None:
-    stale: list[WebSocket] = []
-    for client, client_home_id in CLIENTS.items():
-        if event.startswith("work_order"):
-            if client_home_id != home_id and client_home_id != -1:
-                continue
-        elif client_home_id != home_id:
-            continue
-        try:
-            await client.send_json({"event": event, "data": payload})
-        except Exception:                                   # noqa: BLE001
-            stale.append(client)
-    for client in stale:
-        CLIENTS.pop(client, None)
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     seed_database()
     ensure_db_objects()
-    yield
+    # Redis 可用就启用跨实例广播；不可用会退回单实例，不影响启动
+    await realtime_start()
+    try:
+        yield
+    finally:
+        await realtime_stop()
 
 
 app = FastAPI(title="SmartHome Ops Platform", version="0.5.0", lifespan=lifespan)
@@ -211,8 +219,7 @@ def login(request: LoginRequest) -> dict[str, Any]:
         user = db.scalar(select(User).where(User.username == request.username))
         if user is None or user.password_hash != password_hash(request.password) or not user.active:
             raise HTTPException(401, "invalid_credentials")
-        token = secrets.token_urlsafe(24)
-        TOKENS[token] = user.id
+        token = create_token(user.id)
         return {"access_token": token, "token_type": "bearer",
                 "user": {"id": user.id, "username": user.username,
                          "display_name": user.display_name, "role": role_name(db, user),
@@ -694,7 +701,7 @@ def delete_work_order(order_id: int, user: User = Depends(current_user)) -> dict
 async def events(websocket: WebSocket) -> None:
     token = websocket.query_params.get("token")
     with SessionLocal() as db:
-        user_id = TOKENS.get(token) if token else None
+        user_id = user_id_from_token(token)
         user = db.get(User, user_id) if user_id else None
         role = role_name(db, user) if user else None
         if user is not None and not user.active:

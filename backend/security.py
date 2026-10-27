@@ -1,9 +1,13 @@
 """鉴权、角色与数据归属校验。
 
-三层校验：
-1. 身份层 —— bearer token 是否有效（current_user）
+四层校验：
+1. 身份层 —— JWT 是否有效（current_user）
 2. 角色层 —— 是否属于允许的角色（require_role）
 3. 数据层 —— 是否拥有该家庭的数据（home_for_user / find_device / find_scene）
+4. 推送层 —— 广播时再按家庭过滤一次（realtime.visible）
+
+身份不再依赖进程内 token 表：JWT 自带签名和过期时间，多 worker、
+多实例下天然一致，也不会因为重启把所有人踢下线。
 """
 
 from __future__ import annotations
@@ -18,9 +22,7 @@ from sqlalchemy.orm import Session
 
 from backend.db import SessionLocal
 from backend.models import Device, Member, Role, Scene, User, user_roles
-
-# 演示用：进程内 token 表。生产应换成 JWT 或 Redis 存储（见 README Roadmap）
-TOKENS: dict[str, int] = {}
+from backend.tokens import user_id_from_token
 
 
 def now() -> str:
@@ -36,7 +38,7 @@ def current_user(authorization: Optional[str] = Header(default=None)) -> User:
     with SessionLocal() as db:
         if not authorization or not authorization.lower().startswith("bearer "):
             raise HTTPException(401, "authentication_required")
-        user_id = TOKENS.get(authorization[7:].strip())
+        user_id = user_id_from_token(authorization[7:].strip())
         user = db.get(User, user_id) if user_id else None
         if user is None or not user.active:
             raise HTTPException(401, "invalid_token")

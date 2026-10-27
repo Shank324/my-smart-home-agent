@@ -22,20 +22,29 @@ class VLLMEmbedder:
         self.model = os.getenv("VLLM_EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
         self.dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", str(self.dimensions)))
 
+    @property
+    def signature(self) -> str:
+        """写进索引指纹，换了模型/维度就必须重建索引。"""
+        return f"vllm:{self.model}:{self.dimensions}"
+
     def _request(self, texts: list[str]) -> list[list[float]]:
         payload = json.dumps({"model": self.model, "input": texts}).encode()
-        request = urllib.request.Request(
-            f"{self.base_url}/embeddings", data=payload,
-            headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})},
-        )
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        request = urllib.request.Request(f"{self.base_url}/embeddings", data=payload,
+                                         headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=float(os.getenv("VLLM_TIMEOUT", "20"))) as response:
+            timeout = float(os.getenv("VLLM_TIMEOUT", "20"))
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 data: dict[str, Any] = json.loads(response.read().decode("utf-8"))
-            vectors = [item["embedding"] for item in sorted(data["data"], key=lambda item: item.get("index", 0))]
+            items = sorted(data["data"], key=lambda item: item.get("index", 0))
+            vectors = [item["embedding"] for item in items]
             if any(len(vector) != self.dimensions for vector in vectors):
                 raise EmbeddingError(f"embedding dimension must be {self.dimensions}")
             return [[float(value) for value in vector] for vector in vectors]
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError,
+                ValueError, KeyError, IndexError, TypeError) as exc:
             raise EmbeddingError("vLLM embedding request failed") from exc
 
     def embed_query(self, text: str, prefix: str = "") -> list[float]:
@@ -64,8 +73,14 @@ class HashEmbedder:
     dimensions = 1024
     is_semantic = False
 
+    @property
+    def signature(self) -> str:
+        return f"hash:{self.dimensions}"
+
     def embed(self, text: str) -> list[float]:
-        import hashlib, math, re
+        import hashlib
+        import math
+        import re
         vector = [0.0] * self.dimensions
         for token in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", text.lower()):
             digest = hashlib.blake2b(token.encode(), digest_size=8).digest()
@@ -102,6 +117,10 @@ class DashScopeEmbedder:
         self.model = os.getenv("EMBEDDING_MODEL", "tongyi-embedding-vision-flash-2026-03-06")
         self.dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", "768"))
         self.timeout = float(os.getenv("EMBEDDING_TIMEOUT", "40"))
+
+    @property
+    def signature(self) -> str:
+        return f"dashscope:{self.model}:{self.dimensions}"
 
     def _request(self, texts: list[str]) -> list[list[float]]:
         if not self.api_key:

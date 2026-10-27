@@ -109,8 +109,12 @@ flowchart LR
     AG --> K
     AG <--> L
     S --> K
-    A -. 广播（规划中） .-> R
+    A -- Pub/Sub 广播 --> R
+    R -. 跨实例分发 .-> A
 ```
+
+> 身份用 JWT（自包含、多实例一致），实时事件经 Redis Pub/Sub 分发到各实例，
+> 所以 API 可以横向扩展到多个副本，而不是只能单进程跑。
 
 ### Agent 一次对话的真实链路
 
@@ -362,6 +366,31 @@ POST /api/scenes  ← 复用普通场景接口，草案变成真实场景
 数值之所以不进硬校验，是因为模型会把工具结果做除法取整
 （31.7 小时 ÷ 7 天 = 4.5 小时），这类派生值不是幻觉。
 
+### 13. 身份与广播：从「单进程能跑」到「多副本能跑」
+
+最初 token 和 WebSocket 连接都是进程内字典，这带来两个硬限制：
+重启就把所有人踢下线；多 worker / 多实例时请求落到别的进程就 401、
+事件也广播不过去。改法是两件事：
+
+| 问题 | 做法 | 关键权衡 |
+|---|---|---|
+| 身份跨进程一致 | **JWT（HS256）**，只用标准库实现 | 自包含、无状态；代价是无法主动吊销，只能靠短 TTL |
+| 事件跨实例分发 | **Redis Pub/Sub**：本实例 publish，各实例订阅后推给自己这边的连接 | 多一次序列化；Redis 挂了会降级成单实例广播，而不是让请求失败 |
+
+签名细节：签名对象是 `base64(header).base64(payload)`，用 HMAC-SHA256 算出后附在末尾；
+校验时重算并做**恒定时间比较**（`hmac.compare_digest`），避免通过响应时间猜签名。
+
+广播的可见性判断放在**广播层**再做一次，不只依赖接口鉴权——
+设备事件只发同家庭，工单事件额外发给维修人员（用 `-1` 标记）。
+
+实测方式：起两个 API 进程（8000 / 8001）共用一个 Redis，把 WebSocket 连到 8001，
+再从 8000 发一条设备指令，8001 的连接能收到事件：
+
+```bash
+docker compose exec -d api uvicorn backend.main:app --host 0.0.0.0 --port 8001
+docker compose exec api python scripts/check_broadcast.py --listener http://127.0.0.1:8001
+```
+
 ---
 
 ## 效果评测
@@ -370,13 +399,25 @@ POST /api/scenes  ← 复用普通场景接口，草案变成真实场景
 
 ### 检索质量（50 条问题，章节级标注）
 
-| 配置 | Recall@1 | Recall@5 | MRR |
-|---|---|---|---|
-| 纯 BM25 | 0.740 | 0.940 | 0.825 |
-| BM25 + 通义多模态向量（768 维） | **0.860** | **0.980** | **0.906** |
+| 配置 | Recall@1 | Recall@3 | Recall@5 | MRR |
+|---|---|---|---|---|
+| 纯 BM25（无向量） | 0.740 | — | 0.940 | 0.825 |
+| BM25 + 通义多模态向量（等权） | 0.860 | 0.940 | 0.980 | 0.9057 |
+| **向量 1.0 / BM25 1.2（当前）** | **0.880** | 0.940 | 0.960 | **0.9107** |
 
-混合检索把 Recall@1 提升了 **12 个百分点**，MRR 提升 **8.1 个百分点**。
-原因是向量通道能命中不含文档原词的同义提问（如「点了开关但是设备没反应」）。
+混合检索把 Recall@1 从 0.74 提到 0.88。最后那 2 个百分点来自通道配比调整，
+选它的依据是 **Recall@3 完全相同**——工具实际只把前 3 条交给模型，
+所以 R@5 从 0.98 到 0.96 不影响生成质量。
+
+**试过但否决的方案**（都是同一套 50 题测出来的）：
+
+| 方案 | R@1 | 否决原因 |
+|---|---|---|
+| 章节标题作为第三路召回 | 0.620 | FAQ 的章节名本身就是问句，词面重合天然高，把手册的正确结果挤掉了 |
+| 标题重叠度重排 | 0.840 | 仍是负收益，标题信号与「手册正文」这个目标不对齐 |
+| LLM 查询改写 + 多版本 RRF | 0.840 | 改写变体把同一个错误块顶到多个版本第一，累加后反超原句；且每次检索多 1.5 秒 |
+
+复现：`py eval/tune_retrieval.py`（自动重启容器并逐一评测）。
 
 ### Agent 任务能力（23 个任务）
 
@@ -389,6 +430,25 @@ POST /api/scenes  ← 复用普通场景接口，草案变成真实场景
 | 越权次数 | 0 |
 
 评测口径与注意事项见 [`eval/README.md`](eval/README.md)。
+
+### 代码质量
+
+```
+pytest   86 个用例，覆盖率 76%
+ruff     E/F/W/I/B 规则全过
+CI       GitHub Actions：后端 lint + 测试 + 前端类型检查 + 生产构建
+```
+
+测试覆盖的重点不是行数，而是**容易出错的边界**：
+跨家庭越权、维修人员权限矩阵、HITL「挂起阶段不能有副作用」、
+能耗积分（给定开关时间点算电量）、JWT 篡改与过期、语料变更触发索引重建。
+
+```bash
+docker compose exec api python -m pytest          # 全部用例
+docker compose exec api python -m pytest --cov=backend --cov=app
+```
+
+CI 跑同样的命令，环境用 SQLite + Hash embedding，不依赖 MySQL / Redis / 外部 API。
 
 ---
 
@@ -530,9 +590,11 @@ curl -s -X POST localhost:8000/api/assistant/sessions/$SID/confirm \
 │  ├─ db.py                      engine / SessionLocal / Base
 │  ├─ models.py                  SQLAlchemy ORM
 │  ├─ security.py                认证 / RBAC / 家庭归属校验
+│  ├─ tokens.py                  **JWT 签发与校验（HS256，仅标准库）**
+│  ├─ realtime.py                **连接表 + Redis Pub/Sub 跨实例广播**
 │  ├─ seed.py                    建表与种子数据
 │  ├─ api/knowledge.py           知识库路由
-│  ├─ api/assistant.py           AI 客服路由 + 业务工具注册
+│  ├─ api/assistant.py           Agent 工具注册 + 可用性探测
 │  ├─ api/agent.py               **会话持久化 / 意图路由 / 可恢复确认**
 │  ├─ api/stats.py               统计、复杂查询、能耗归因
 │  ├─ agent_guard.py             **意图分类 / 输入护栏 / 落地校验**
@@ -540,6 +602,7 @@ curl -s -X POST localhost:8000/api/assistant/sessions/$SID/confirm \
 │  ├─ db_objects.py              视图 / 触发器 / 索引
 │  ├─ device_types.py            设备类型目录 + 参数校验
 │  ├─ requirements.txt
+│  ├─ requirements-dev.txt       测试依赖（pytest / httpx / websockets / ruff）
 │  └─ Dockerfile
 ├─ app/services/agent/           Agent 与检索能力（框架无关）
 │  ├─ llm.py                     DeepSeek 客户端
@@ -550,15 +613,30 @@ curl -s -X POST localhost:8000/api/assistant/sessions/$SID/confirm \
 │     ├─ splitter.py             标题层级切分 + 纯标题块过滤
 │     ├─ embedder.py             vLLM / 百炼多模态向量 / Hash 三实现
 │     ├─ vector_store.py         Qdrant / JSON 双后端
-│     ├─ retriever.py            混合检索 + RRF + 中文二元组分词
+│     ├─ retriever.py            混合检索 + 加权 RRF + 中文二元组分词
+│     ├─ rewrite.py              查询改写（**实现了但默认关闭**，消融是负收益）
 │     └─ schemas.py              Pydantic 数据契约
+├─ tests/                        pytest（86 个用例，覆盖率 76%）
+│  ├─ conftest.py                SQLite + Hash embedding，不依赖外部服务
+│  ├─ test_auth.py               登录 / 注册 / 角色边界
+│  ├─ test_tenant_isolation.py   跨家庭越权
+│  ├─ test_agent_session.py      HITL：提案 → 挂起 → 确认（假 LLM 驱动）
+│  ├─ test_agent_guard.py        意图规则 / 领域护栏 / 落地校验
+│  ├─ test_energy.py             能耗积分与自然日窗口
+│  ├─ test_retrieval.py          分词 / BM25 / 索引复用
+│  ├─ test_tokens_realtime.py    JWT 篡改过期 / 可见性规则 / 广播降级
+│  └─ test_devices.py, test_scenes.py, test_work_orders.py
 ├─ eval/                         评测集与脚本
 │  ├─ retrieval_questions.json   50 条检索问题（章节级标注）
 │  ├─ run_retrieval_eval.py      Recall@K / MRR
-│  ├─ tasks.json                 20 个 Agent 任务
+│  ├─ tune_retrieval.py          **检索配比消融**
+│  ├─ tasks.json                 23 个 Agent 任务
 │  └─ run_task_eval.py           意图/工具/成功率/落地率
 ├─ scripts/
-│  └─ seed_device_history.py     生成演示用设备历史
+│  ├─ seed_device_history.py     生成演示用设备历史
+│  └─ check_broadcast.py         **跨实例广播自检（两个 API 实例 + 同一 Redis）**
+├─ .github/workflows/ci.yml      lint + pytest + 前端构建
+├─ ruff.toml / pytest.ini        工具配置
 ├─ seed_data/                    设备手册（知识源，8 篇约 1.25 万字）
 ├─ docker-compose.yml
 └─ init_knowledge.py             离线索引脚本
@@ -579,34 +657,41 @@ curl -s -X POST localhost:8000/api/assistant/sessions/$SID/confirm \
 - [x] 工单完工登记（费用 / 工时）
 - [x] 场景动作规范化成关联表（`scene_actions` + 唯一约束 + 级联）
 - [x] 设备类型目录 + 类型化参数校验（表单按类型动态渲染）
-- [x] 检索评测集与指标（50 条，Recall@1 0.74 → 0.86）
+- [x] 检索评测集与指标（50 条，Recall@1 0.74 → 0.88）
 - [x] 前端 AI 客服对话面板（多会话切换、待确认卡片）
 - [x] Agent 会话持久化 + 意图路由（4 类）+ 可恢复中断确认
 - [x] 输入护栏与答案落地校验（设备名零幻觉）
-- [x] 任务级评测（20 个任务，成功率 100%）
+- [x] 任务级评测（23 个任务，成功率 100%）
 - [x] 设备状态历史（触发器）+ 能耗归因 + Agent 分析工具
 - [x] 接入百炼通义多模态向量（768 维），混合检索生效
+- [x] 报修前补全设备信息（结构化草稿 + 二次确认）
+- [x] 检索通道配比消融（标题通道 / 查询改写 / 权重扫描，负收益方案已否决）
+- [x] **JWT 替换进程内 token，多 worker 与多实例共享身份**
+- [x] **Redis Pub/Sub 跨实例广播（已用双实例实测）**
+- [x] **pytest 86 用例 / 覆盖率 76% + GitHub Actions CI**
 - [ ] Agent 建单后广播 WebSocket 事件
 - [ ] 流式输出（SSE）
-- [ ] Redis Pub/Sub 替换进程内连接表，支持多实例部署
 - [ ] 接单并发幂等（唯一索引 + 乐观锁）
-- [ ] 密码哈希升级（bcrypt）+ JWT
-- [ ] pytest / GitHub Actions / 覆盖率
+- [ ] 密码哈希升级（bcrypt / argon2）
+- [ ] 压测与容量数据（QPS / P95）
 
 ---
 
 ## 已知限制
 
-- Token 与 WebSocket 连接表存于进程内字典，服务重启即失效，不支持多 worker
+- **密码仍是无盐 SHA-256**：身份层已换成 JWT，但口令存储还没换 bcrypt/argon2，这是当前最大的安全缺口
+- **还没有压测数据**：QPS / P95 / 连接数上限都没测过，只能说「架构上支持多实例」，不能说「扛得住多少」
+- WebSocket 的 JWT 仍放在 query string 里（浏览器 `WebSocket` 不能自定义 header），
+  会进访问日志；生产应改成「先取一次性 ticket 再连接」
+- Redis 不可用时广播会**降级为单实例**（可用性优先），此时多副本之间的推送会漏
 - 前端 API 地址硬编码为 `localhost:8000`，尚未读取环境变量
-- 密码使用无盐 SHA-256，仅用于演示，生产需替换
 - Agent 建单不会主动广播，维修端需刷新后才看到
 - 本地 Hash embedding 的检索质量明显弱于真实向量模型，仅用于离线跑通链路
 - 数据库视图与触发器仅 MySQL 生效；本地 SQLite 会自动跳过并降级为 ORM 查询
 - ORM 会话配置了 `expire_on_commit=False`，因此读不到触发器就地写入的字段，需重新查库
 - 设备参数存在 JSON 列里，**不能**用 SQL 直接按「温度 > 26」筛选；需要时应改为独立列或加生成列
-- 登录 token 存于进程内，后端容器重启后所有人需要重新登录（前端已给明确提示，不再静默踢回）
-- 评测集规模有限（检索 50 条、任务 20 条），用于回归与量化，不代表线上分布
+- 评测集规模有限（检索 50 条、任务 23 条），用于回归与量化，不代表线上分布
+- 单元测试 86 个用例覆盖 76%，但没覆盖真实 LLM 调用（用假模型驱动编排逻辑）
 - 设备历史只统计有记录的时间段；新部署时历史为空，可用 `scripts/seed_device_history.py` 生成演示数据
 - 能耗按「额定功率 × 通电时长」估算，没有考虑变频与待机功耗，属于区间估计
 - 向量索引是**独立存储**（json 文件或 Qdrant），不放在 MySQL 里：MySQL 8 没有原生向量类型与 ANN 索引。

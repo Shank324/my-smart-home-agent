@@ -45,7 +45,8 @@ class QdrantVectorStore:
             if not self._client.collection_exists(self.collection_name):
                 self._client.create_collection(
                     self.collection_name,
-                    vectors_config=self._models.VectorParams(size=1024, distance=self._models.Distance.COSINE),
+                    vectors_config=self._models.VectorParams(
+                        size=self.dimensions, distance=self._models.Distance.COSINE),
                 )
         except Exception as exc:
             raise VectorStoreError("cannot initialize Qdrant collection device_knowledge") from exc
@@ -97,7 +98,8 @@ class QdrantVectorStore:
         self._fingerprint = fingerprint
         return [chunk for chunk, _ in loaded], fingerprint
 
-    def search(self, vector: list[float], top_k: int, filter_conditions: Optional[dict[str, Any]] = None) -> list[RetrievalResult]:
+    def search(self, vector: list[float], top_k: int,
+               filter_conditions: Optional[dict[str, Any]] = None) -> list[RetrievalResult]:
         if self._client:
             query_filter = None
             if filter_conditions:
@@ -105,7 +107,8 @@ class QdrantVectorStore:
                     self._models.FieldCondition(key=k, match=self._models.MatchValue(value=v))
                     for k, v in filter_conditions.items()])
             try:
-                points = self._client.search(self.collection_name, vector, limit=top_k, query_filter=query_filter)
+                points = self._client.search(self.collection_name, vector, limit=top_k,
+                                             query_filter=query_filter)
                 return [self._result(TextChunk.model_validate(point.payload), float(point.score))
                         for point in points]
             except Exception as exc:
@@ -117,7 +120,7 @@ class QdrantVectorStore:
         for chunk, candidate in self._items:
             if filter_conditions and any(chunk.metadata.get(k) != v for k, v in filter_conditions.items()):
                 continue
-            score = sum(a * b for a, b in zip(vector, candidate))
+            score = sum(a * b for a, b in zip(vector, candidate, strict=True))
             results.append(self._result(chunk, score))
         return sorted(results, key=lambda item: item.score, reverse=True)[:top_k]
 

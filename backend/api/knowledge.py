@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, HTTPException
 
 from app.services.agent.knowledge.embedder import EmbeddingError
 from app.services.agent.knowledge.loader import KnowledgeLoadError
 from app.services.agent.knowledge.retriever import KnowledgeRetriever
+from app.services.agent.knowledge.rewrite import QueryRewriter
 from app.services.agent.knowledge.schemas import (
-    KnowledgeSearchRequest, KnowledgeSearchResponse, KnowledgeStatus,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+    KnowledgeStatus,
 )
 from app.services.agent.knowledge.vector_store import VectorStoreError
+from app.services.agent.llm import DeepSeekClient
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
-retriever = KnowledgeRetriever()
+
+# 查询改写默认关闭：消融实验里它是负收益（R@1 0.86 → 0.84），
+# 详见 eval/README.md。保留实现是为了让「试过但没采用」可复现。
+_rewriter = QueryRewriter(DeepSeekClient()) if os.getenv("KNOWLEDGE_QUERY_REWRITE", "0") == "1" else None
+retriever = KnowledgeRetriever(rewriter=_rewriter)
 
 
 @router.post("/search", response_model=KnowledgeSearchResponse)

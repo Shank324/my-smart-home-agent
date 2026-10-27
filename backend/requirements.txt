@@ -4,6 +4,4 @@ pydantic==2.10.4
 sqlalchemy==2.0.36
 pymysql==1.1.1
 redis==5.2.1
-python-multipart==0.0.20
-jieba==0.42.1
 qdrant-client==1.13.2

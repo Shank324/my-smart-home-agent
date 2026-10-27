@@ -1,0 +1,6 @@
+# 测试与开发依赖（CI 里单独安装；镜像里也装了，方便 `docker compose exec api python -m pytest`）
+pytest==8.3.4
+pytest-cov==6.0.0
+httpx==0.28.1
+websockets==14.1
+ruff==0.8.4

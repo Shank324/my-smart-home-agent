@@ -8,8 +8,18 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
 from backend.db import Base, SessionLocal, engine
-from backend.models import (Device, Home, Member, Permission, Role, Scene, SceneAction,
-                            User, role_permissions, user_roles)
+from backend.models import (
+    Device,
+    Home,
+    Member,
+    Permission,
+    Role,
+    Scene,
+    SceneAction,
+    User,
+    role_permissions,
+    user_roles,
+)
 from backend.security import password_hash
 
 SEED_DEVICES = (

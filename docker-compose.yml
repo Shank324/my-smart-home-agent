@@ -39,6 +39,14 @@ services:
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
       KNOWLEDGE_VECTOR_BACKEND: ${KNOWLEDGE_VECTOR_BACKEND:-json}
       KNOWLEDGE_DATA_DIR: seed_data
+      # 鉴权与实时广播：JWT 让多实例/多 worker 共享身份，Redis 让广播跨实例
+      JWT_SECRET: ${JWT_SECRET:-dev-insecure-secret-change-me}
+      JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-86400}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # 检索消融参数：权重与查询改写都可以通过环境变量对比效果
+      KNOWLEDGE_VECTOR_WEIGHT: ${KNOWLEDGE_VECTOR_WEIGHT:-1.0}
+      KNOWLEDGE_BM25_WEIGHT: ${KNOWLEDGE_BM25_WEIGHT:-1.2}
+      KNOWLEDGE_QUERY_REWRITE: ${KNOWLEDGE_QUERY_REWRITE:-0}
     ports:
       - "8000:8000"
     volumes:
@@ -47,6 +55,10 @@ services:
       # 开发期挂载源码：改代码后 restart 即可生效
       - ./backend:/app/backend:ro
       - ./app:/app/app:ro
+      # 测试代码：`docker compose exec api python -m pytest` 直接跑
+      - ./tests:/app/tests:ro
+      # 运维脚本：初始化索引、生成演示数据、跨实例广播自检
+      - ./scripts:/app/scripts:ro
       # 向量索引持久化：容器重建后不必重新 embedding 全部语料
       - knowledge_index:/app/.data
     depends_on:
