@@ -263,6 +263,64 @@ def build_registry(user: User) -> ToolRegistry:
         return report
 
     @registry.register(
+        "propose_work_order",
+        "把报修信息整理成结构化草稿，交给用户确认后才建单（**本工具不会立即创建工单**）。"
+        "用户要报修时：先用 list_devices 找到是哪台设备、用 get_device_status 查它当前状态和数值，"
+        "再确认现象、开始时间、是否已排查、是否涉及安全。"
+        "用户已经说清设备和现象时直接出草稿；缺关键信息（比如没说哪台设备）就用一两句话追问，不要连问一串。",
+        {"type": "object",
+         "properties": {
+             "title": {"type": "string", "description": "工单标题，含设备与现象，20 字以内"},
+             "symptom": {"type": "string", "description": "故障现象，越具体越好"},
+             "device": {"type": "string", "description": "设备名称，必须来自 list_devices 的返回"},
+             "started_at": {"type": "string", "description": "什么时候开始的，用户怎么说就怎么记"},
+             "checked": {"type": "string", "description": "用户已做过的排查，如「已断电重启」"},
+             "safety": {"type": "string", "description": "安全相关情况，如焦糊味、漏水、异味"},
+             "pending_info": {"type": "string",
+                              "description": "还缺的信息，如「不确定是否断电」「不清楚具体哪盏灯」；"
+                                             "没有就留空"},
+             "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"]},
+         },
+         "required": ["title", "symptom"]})
+    def propose_work_order(title: str, symptom: str, device: str = "", started_at: str = "",
+                           checked: str = "", safety: str = "", pending_info: str = "",
+                           priority: str = "medium") -> dict[str, Any]:
+        with SessionLocal() as db:
+            home_id = home_for_user(db, user)
+            devices = list(db.scalars(select(Device).where(Device.home_id == home_id)))
+        target = _match_device(device, devices) if device else None
+        snapshot: Optional[dict[str, Any]] = None
+        if target is not None:
+            snapshot = {"device_id": target.id, "name": target.name, "room": target.room,
+                        "type": TYPE_LABELS.get(target.type, target.type),
+                        "online": target.online, "active": target.active,
+                        "value": target.value, "attributes": target.attributes or {}}
+        lines = [f"故障现象：{symptom.strip()}"]
+        if snapshot:
+            state = "在线" if snapshot["online"] else "离线"
+            lines.append(f"设备：{snapshot['name']}（{snapshot['room']} · {snapshot['type']}，"
+                         f"当前{state}，数值 {snapshot['value']}）")
+        elif device.strip():
+            lines.append(f"设备：{device.strip()}（未在设备列表中找到，可能未接入平台）")
+        if started_at.strip():
+            lines.append(f"开始时间：{started_at.strip()}")
+        if checked.strip():
+            lines.append(f"已排查：{checked.strip()}")
+        if safety.strip():
+            lines.append(f"安全情况：{safety.strip()}")
+        if pending_info.strip():
+            lines.append(f"待确认：{pending_info.strip()}")
+        description = "\n".join(lines)[:500]
+        chosen = priority if priority in {"low", "medium", "high", "urgent"} else "medium"
+        return {"work_order": {
+            "title": title.strip()[:120],
+            "description": description,
+            "priority": chosen,
+            "device_id": snapshot["device_id"] if snapshot else None,
+            "device": snapshot,
+        }}
+
+    @registry.register(
         "list_work_orders",
         "列出当前用户的维修工单及状态。",
         {"type": "object", "properties": {}})
@@ -302,7 +360,7 @@ def build_registry(user: User) -> ToolRegistry:
 
 
 TOOL_NAMES = ("search_knowledge", "list_devices", "get_device_status", "analyze_energy",
-              "list_work_orders", "create_work_order", "propose_scene")
+              "list_work_orders", "create_work_order", "propose_work_order", "propose_scene")
 
 
 @router.get("/status")

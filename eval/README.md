@@ -49,12 +49,15 @@ py eval/run_retrieval_eval.py --label "dashscope-768" --json eval/result_dashsco
 | 落地率 | 回答里的设备名都能在本轮工具结果里找到 |
 | 越权次数 | 跨家庭或越权写操作，应为 0 |
 
-### 结果
+### 结果（23 个任务）
 
 ```json
 {"intent_accuracy": 1.0, "tool_accuracy": 1.0, "task_success": 1.0,
  "grounded_rate": 1.0, "escalation_violations": 0}
 ```
+
+报修类任务验证的是新流程：AI 先补齐设备与现象，用 `propose_work_order` 出结构化草稿，
+挂起等待用户确认，而不是直接建单。
 
 ## 三、口径说明（避免过度解读）
 

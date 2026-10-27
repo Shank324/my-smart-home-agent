@@ -25,7 +25,8 @@ from backend.api.assistant import build_registry, llm
 from backend.db import SessionLocal
 from backend.models import AgentMessage, AgentSession, Device, User
 from backend.security import current_user, home_for_user, role_name
-from backend.services import create_scene_from_actions, pending_payload
+from backend.services import (create_scene_from_actions, create_work_order_from_proposal,
+                              pending_payload)
 
 router = APIRouter(prefix="/api/assistant/sessions", tags=["agent"])
 
@@ -166,9 +167,14 @@ def send_message(session_id: int, request: TurnRequest,
 
         # 5) 有待确认动作就挂起，等用户确认后再落库
         proposal = result.get("proposal")
+        work_order = result.get("work_order")
         if proposal:
             conversation.pending_action = {"type": "scene", "payload": proposal,
                                            "summary": proposal.get("name")}
+            conversation.status = "pending_confirm"
+        elif work_order:
+            conversation.pending_action = {"type": "work_order", "payload": work_order,
+                                           "summary": work_order.get("title")}
             conversation.status = "pending_confirm"
         if conversation.title in ("", "新对话"):
             conversation.title = message[:40]
@@ -181,6 +187,7 @@ def send_message(session_id: int, request: TurnRequest,
         return {"session_id": conversation.id, "status": conversation.status,
                 "answer": result["answer"], "intent": intent, "intent_source": intent_source,
                 "blocked": False, "citations": result["citations"], "proposal": proposal,
+                "work_order": work_order,
                 "grounded": grounding["grounded"], "warnings": grounding["warnings"],
                 "numeric_unverified": grounding.get("numeric_unverified", []),
                 "steps": result.get("steps", 0),
@@ -197,28 +204,38 @@ def confirm_pending(session_id: int, user: User = Depends(current_user)) -> dict
             raise HTTPException(409, "nothing_to_confirm")
         kind = pending.get("type")
         payload = pending.get("payload") or {}
-
-        if kind != "scene":
-            raise HTTPException(422, "unsupported_pending_action")
         if role_name(db, user) != "home_user":
             raise HTTPException(403, "home_user_only")
         home_id = home_for_user(db, user)
-        try:
-            scene = create_scene_from_actions(db, home_id, payload)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
 
-        text = (f"已布设场景「{scene.name}」，共 {len(scene.action_rows)} 个动作，"
-                f"可在「自动化场景」里执行或修改。")
+        data: dict[str, Any] = {}
+        if kind == "scene":
+            try:
+                scene = create_scene_from_actions(db, home_id, payload)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            text = (f"已布设场景「{scene.name}」，共 {len(scene.action_rows)} 个动作，"
+                    f"可在「自动化场景」里执行或修改。")
+            data = {"id": scene.id, "name": scene.name,
+                    "action_count": len(scene.action_rows)}
+        elif kind == "work_order":
+            order = create_work_order_from_proposal(db, home_id, user.id, payload)
+            priority_text = {"low": "低", "medium": "普通", "high": "高", "urgent": "紧急"}
+            text = (f"已提交报修工单 #{order.id}「{order.title}」，"
+                    f"优先级为{priority_text.get(order.priority, order.priority)}。"
+                    f"维修人员会在工单池看到它，接单后会在这里联系你。")
+            data = {"id": order.id, "title": order.title,
+                    "status": order.status, "priority": order.priority}
+        else:
+            raise HTTPException(422, "unsupported_pending_action")
+
         conversation.pending_action = None
         conversation.status = "active"
         db.add(AgentMessage(session_id=conversation.id, role="assistant", content=text,
                             grounding={"grounded": True, "warnings": []}))
         db.commit()
         return {"session_id": conversation.id, "status": conversation.status,
-                "message": text,
-                "scene": {"id": scene.id, "name": scene.name,
-                          "action_count": len(scene.action_rows)}}
+                "message": text, "kind": kind, "result": data}
 
 
 @router.post("/{session_id}/cancel")

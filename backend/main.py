@@ -679,6 +679,9 @@ def delete_work_order(order_id: int, user: User = Depends(current_user)) -> dict
         order = db.get(WorkOrder, order_id)
         if order is None:
             raise HTTPException(404, "work_order_not_found")
+        # 只能删自己接的单：否则任何维修人员都能删掉别人的工单，甚至删掉还没被接的单
+        if order.assigned_to != user.id:
+            raise HTTPException(403, "work_order_not_assigned")
         db.delete(order)
         db.commit()
         return {"deleted": True, "work_order_id": order_id}

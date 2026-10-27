@@ -36,6 +36,7 @@ const error = ref('')
 const message = ref('')
 const busy = ref(false)
 const chatDraft = ref('')
+const completionForm = ref({ cost: '', duration: '' })
 const form = ref({ username: '', password: '', display_name: '', home_name: '', role: 'home_user' as Role, phone: '', specialty: '', experience_years: '' })
 const orderForm = ref({ title: '', description: '', device_id: '', priority: 'medium' })
 const deviceForm = ref({ id: null as number | null, name: '', room: '', type: 'light', online: true, active: false, value: '0%', power_consumption: 0, attributes: {} as Record<string, number | string> })
@@ -67,7 +68,9 @@ const powerActiveWatts = computed(() => Math.round(stats.value?.device_stats.pow
 type Citation = { source: string; section: string }
 type ProposalAction = { device_id: number; device_name: string; room: string; action: string; attributes: Record<string, number | string>; label: string }
 type SceneProposal = { name: string; description: string; rationale: string; actions: ProposalAction[]; missing: string[] }
-type AssistantMessage = { role: 'user' | 'assistant'; content: string; citations?: Citation[]; proposal?: SceneProposal; applied?: boolean; pending?: boolean; intent?: string; grounded?: boolean; warnings?: string[] }
+type WorkOrderDevice = { device_id: number; name: string; room: string; type: string; online: boolean; active: boolean; value: string; attributes: Record<string, number | string> }
+type WorkOrderDraft = { title: string; description: string; priority: string; device_id: number | null; device: WorkOrderDevice | null }
+type AssistantMessage = { role: 'user' | 'assistant'; content: string; citations?: Citation[]; proposal?: SceneProposal; workOrder?: WorkOrderDraft; applied?: boolean; pending?: boolean; intent?: string; grounded?: boolean; warnings?: string[] }
 type AgentSessionInfo = { id: number; title: string; status: string; message_count?: number }
 const assistantOpen = ref(false)
 const assistantBusy = ref(false)
@@ -493,6 +496,29 @@ async function updateStatus(orderId: number, status: Status) {
   notify('工单状态已更新')
 }
 
+async function completeOrder(orderId: number) {
+  const cost = Number(completionForm.value.cost)
+  const duration = Number(completionForm.value.duration)
+  if (!completionForm.value.cost && !completionForm.value.duration) {
+    notify('请至少填写实际费用或工时')
+    return
+  }
+  const payload: Record<string, number> = {}
+  if (completionForm.value.cost !== '') payload.cost = Number.isFinite(cost) ? cost : 0
+  if (completionForm.value.duration !== '') payload.duration_minutes = Number.isFinite(duration) ? Math.round(duration) : 0
+  const response = await api(`/api/work-orders/${orderId}/completion`, {
+    method: 'PUT', body: JSON.stringify(payload)
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    notify(`完工登记失败：${typeof detail.detail === 'string' ? detail.detail : response.status}`)
+    return
+  }
+  completionForm.value = { cost: '', duration: '' }
+  await loadData()
+  notify('完工已登记，工单已置为已解决')
+}
+
 async function selectOrder(orderId: number) {
   selectedOrderId.value = orderId
   await loadMessages(orderId)
@@ -553,6 +579,17 @@ async function openSession(id: number) {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       if (messages[index].proposal) { messages[index].pending = true; break }
     }
+    // 报修草稿没有单独的持久化列，从 pending_action 还原到最后一个 assistant 消息上
+    const pending = payload.pending_action
+    if (pending?.type === 'work_order') {
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index].role === 'assistant') {
+          messages[index].workOrder = pending.payload as WorkOrderDraft
+          messages[index].pending = true
+          break
+        }
+      }
+    }
   }
   assistantMessages.value = messages
   await scrollAssistant()
@@ -602,6 +639,7 @@ async function askAssistant() {
       content: payload.answer || '抱歉，我没有得到有效回复。',
       citations: payload.citations || [],
       proposal: payload.proposal || undefined,
+      workOrder: payload.work_order || undefined,
       intent: payload.intent || undefined,
       grounded: payload.grounded,
       warnings: payload.warnings || [],
@@ -1070,6 +1108,18 @@ onMounted(() => { void loadDeviceTypes(); void hydrate() })
                   </div>
                 </div>
 
+                <div v-if="!isHome && activeOrder.assigned_to === user.id && activeOrder.status !== 'resolved'"
+                     class="completion-bar">
+                  <span class="completion-label">完工登记</span>
+                  <input v-model="completionForm.cost" type="number" min="0" step="1" placeholder="实际费用(元)">
+                  <input v-model="completionForm.duration" type="number" min="0" step="5" placeholder="工时(分钟)">
+                  <button class="ghost" @click="completeOrder(activeOrder.id)">提交完工</button>
+                </div>
+                <p v-else-if="!isHome && activeOrder.status === 'resolved' && activeOrder.cost !== null"
+                   class="hint completion-done">
+                  完工记录：费用 {{ activeOrder.cost }} 元 · 工时 {{ activeOrder.duration_minutes ?? '-' }} 分钟
+                </p>
+
                 <div v-if="timeline.length" class="timeline">
                   <p class="hint">状态流转 · 由数据库触发器记录</p>
                   <div v-for="(event, index) in timeline" :key="index" class="timeline-row">
@@ -1160,6 +1210,25 @@ onMounted(() => { void loadDeviceTypes(); void hydrate() })
               <p v-if="item.applied" class="proposal-done">✓ 已布设为场景，可在「自动化场景」里执行</p>
               <div v-else-if="item.pending" class="proposal-buttons">
                 <button class="primary" @click="confirmPending(item)">确认布设</button>
+                <button class="ghost" @click="cancelPending(item)">取消</button>
+              </div>
+            </div>
+
+            <div v-if="item.workOrder" class="proposal work-order-card">
+              <div class="proposal-head">
+                <b>报修草稿 · {{ item.workOrder.title }}</b>
+                <span>{{ priorityText[item.workOrder.priority] || item.workOrder.priority }}</span>
+              </div>
+              <p class="proposal-desc">信息由 AI 整理，提交前请核对一遍</p>
+              <pre class="work-order-desc">{{ item.workOrder.description }}</pre>
+              <div v-if="item.workOrder.device" class="device-snap">
+                设备快照：{{ item.workOrder.device.name }} ·
+                {{ item.workOrder.device.online ? '在线' : '离线' }} ·
+                {{ item.workOrder.device.value }}
+              </div>
+              <p v-if="item.applied" class="proposal-done">✓ 已提交报修，可在「维修工单」里跟进</p>
+              <div v-else-if="item.pending" class="proposal-buttons">
+                <button class="primary" @click="confirmPending(item)">提交报修</button>
                 <button class="ghost" @click="cancelPending(item)">取消</button>
               </div>
             </div>

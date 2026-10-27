@@ -37,11 +37,20 @@ DEFAULT_SYSTEM_PROMPT = """你是「智家管家」，一个智能家居平台�
 - search_knowledge：查设备手册和常见问题，回答故障、操作方法前必须先查
 - get_device_status：单个设备的详细状态
 - analyze_energy：统计最近 N 天各设备/各房间的用电量与运行时长。
-  用户问「电费为什么高」「空调开了多久」「哪个房间最费电」时必须调用它，不要凭感觉答
+  用户问「电费为什么高」「昨天用电多少」「空调开了多久」时必须调用它，不要凭感觉答
 - list_work_orders：查报修记录
-- create_work_order：**用户明确要求报修或叫人上门时，直接建单，不要先反问**。
-  把已知信息写进标题和描述，缺失的细节让用户在工单对话里补充；
-  涉及安全的（漏水、冒烟、漏电）优先级用 high 或 urgent。
+
+报修怎么处理（很重要）：
+用户说「报修 / 找人修 / 坏了要修」时，**不要直接建单，先补全信息**：
+1. 先用 list_devices 找到是哪台设备，用 get_device_status 查它的在线状态、当前值、是否有故障码
+2. 自动能查到的信息（设备名、房间、在线状态、当前数值）不要问用户
+3. **只要「哪台设备 + 什么现象」齐了，就立刻调用 propose_work_order 出草稿**，
+   不要为了少一次追问而卡住。缺的次要信息（何时开始、是否断电、具体哪盏灯）
+   写进 pending_info，草稿里会显示成「待确认」，用户确认前还能补充
+4. 只有连设备和现象都没有时（如「我家有东西坏了」），才用一两句话追问，不要连问一串
+5. 涉及安全的（漏水、冒烟、漏电、焦糊味）优先级用 high 或 urgent。
+   安全提示放在文字里说，**但不要因为要先给安全提示就不出草稿**
+6. 出草稿后，文字里说明「已整理成草稿，确认后提交」以及还需要用户补充什么
 
 回答要求：
 1. 涉及设备故障、操作方法时，先用 search_knowledge 查证，不要凭记忆回答。
@@ -80,6 +89,7 @@ class Assistant:
         trace: list[dict[str, Any]] = []
         evidence: list[str] = []
         proposal: Optional[dict[str, Any]] = None
+        work_order: Optional[dict[str, Any]] = None
         answer = ""
 
         for step in range(1, self.max_steps + 1):
@@ -89,7 +99,8 @@ class Assistant:
 
             if not tool_calls:
                 return {"answer": answer, "citations": citations, "tool_calls": trace,
-                        "proposal": proposal, "evidence": "\n".join(evidence), "steps": step}
+                        "proposal": proposal, "work_order": work_order,
+                        "evidence": "\n".join(evidence), "steps": step}
 
             # 把 assistant 的 tool_calls 原样回传，否则下一轮模型会丢上下文
             messages.append({"role": "assistant", "content": answer, "tool_calls": tool_calls})
@@ -113,6 +124,8 @@ class Assistant:
                                               "section": hit.get("section", "")})
                 if name == "propose_scene" and isinstance(result.get("proposal"), dict):
                     proposal = result["proposal"]
+                if name == "propose_work_order" and isinstance(result.get("work_order"), dict):
+                    work_order = result["work_order"]
 
                 evidence.append(json.dumps(result, ensure_ascii=False)[:4000])
 
@@ -123,5 +136,5 @@ class Assistant:
 
         return {"answer": answer or "抱歉，这个问题我需要更多信息才能回答。",
                 "citations": citations, "tool_calls": trace, "proposal": proposal,
-                "evidence": "\n".join(evidence),
+                "work_order": work_order, "evidence": "\n".join(evidence),
                 "steps": self.max_steps, "truncated": True}
